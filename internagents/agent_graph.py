@@ -1506,6 +1506,182 @@ class ImageContentCompatibilityMiddleware(AgentMiddleware):
             )
 
 
+# Agent routing cache and filters (Phase 3.5)
+_AGENT_GRAPH_CACHE: dict[tuple[str, str], Any] = {}
+
+
+def _filter_tools_by_agent(
+    tools: list[Any],
+    agent_config: "internagents.agent_registry.AgentConfig",
+) -> list[Any]:
+    """Filter tools based on agent's whitelist/blacklist configuration.
+
+    If whitelist is None, keep all tools (except blacklist).
+    If whitelist is set, keep only tools whose name matches whitelist entries.
+
+    Args:
+        tools: List of tool objects with .name attribute
+        agent_config: AgentConfig with tool_whitelist and tool_blacklist
+
+    Returns:
+        Filtered list of tools
+    """
+    if not tools:
+        return []
+
+    # If whitelist is set, keep only whitelisted tools
+    if agent_config.tool_whitelist is not None:
+        whitelist_set = set(agent_config.tool_whitelist)
+        tools = [t for t in tools if hasattr(t, 'name') and t.name in whitelist_set]
+
+    # Then remove blacklisted tools
+    if agent_config.tool_blacklist:
+        blacklist_set = set(agent_config.tool_blacklist)
+        tools = [t for t in tools if not (hasattr(t, 'name') and t.name in blacklist_set)]
+
+    return tools
+
+
+def _filter_middlewares_for_agent(
+    agent_config_dict: dict[str, Any],
+    agent_cfg: "internagents.agent_registry.AgentConfig",
+    backend: Any,
+    resource: ResourceConfig | None = None,
+) -> list[Any]:
+    """Build middleware list for an agent based on its configuration.
+
+    Creates middleware instances for each middleware name in agent_cfg.middlewares.
+    Currently supported: "date", "goal", "skill", "kb_sync"
+
+    Args:
+        agent_config_dict: The full deepagent.config.json config
+        agent_cfg: AgentConfig specifying which middlewares to use
+        backend: The backend instance to pass to middlewares that need it
+        resource: Optional resource for kb_sync middleware
+
+    Returns:
+        List of middleware instances to use for this agent
+    """
+    middleware = []
+
+    for name in (agent_cfg.middlewares or []):
+        if name == "date":
+            middleware.append(RuntimeDateContextMiddleware())
+        elif name == "goal":
+            middleware.append(GoalContextMiddleware())
+        elif name == "skill":
+            middleware.append(_thread_skill_middleware(agent_config_dict, backend))
+        elif name == "kb_sync" and resource is not None:
+            middleware.append(KbSyncMiddleware(resource=resource, backend=backend))
+
+    # Always add compatibility and budget middlewares for all agents
+    middleware.append(ImageContentCompatibilityMiddleware())
+    middleware.append(WebSearchBudgetMiddleware())
+
+    return middleware
+
+
+def _build_agent_graph_for(
+    resource_id: str,
+    agent_name: str,
+) -> Any:
+    """Build a new deep_agent graph for the given resource and agent name.
+
+    This factory function creates a per-agent-per-resource graph by:
+    1. Loading the agent's configuration from agent_registry
+    2. Loading the agent's prompt from YAML
+    3. Filtering tools and middlewares per agent config
+    4. Creating the deep_agent with all customizations applied
+
+    Args:
+        resource_id: Resource identifier (usually "local" or "remote1"-"remote8")
+        agent_name: Agent name ("main", "reviewer", "bookmarker", "onboarding")
+
+    Returns:
+        Compiled LangGraph agent
+
+    Raises:
+        AgentNotFoundError: If agent_name is not registered
+    """
+    from internagents.agent_registry import get_agent_config, load_agent_prompt
+
+    # Load agent config to determine customizations
+    agent_cfg = get_agent_config(agent_name)
+
+    # Load agent-specific system prompt
+    agent_prompt = load_agent_prompt(agent_name)
+
+    # Resolve resource
+    resource = _resolve_resource(resource_id)
+
+    # Load base agent config
+    agent_config = _load_agent_config()
+    resolved_skills = _resolve_skills(agent_config)
+
+    # Create backend
+    backend = _create_backend_for_resource(
+        resource,
+        read_only_roots=_skill_read_only_roots(agent_config, resolved_skills),
+    )
+
+    # Get all tools and filter by agent config
+    all_tools = _resolve_tools(agent_config)
+    filtered_tools = _filter_tools_by_agent(all_tools, agent_cfg)
+
+    # Build middleware list
+    middleware = _filter_middlewares_for_agent(agent_config, agent_cfg, backend, resource)
+
+    # For main agent, add remote compute interrupt support
+    interrupt_on = (
+        _interrupt_on_with_remote_compute(agent_config)
+        if agent_name == "main"
+        else {}
+    )
+
+    # Build and return the agent graph
+    return create_deep_agent(
+        model=_create_agent_model(),
+        tools=filtered_tools,
+        backend=backend,
+        skills=resolved_skills,
+        subagents=_thread_skill_subagents(agent_config, backend),
+        system_prompt=_agent_system_prompt(agent_prompt, agent_config),
+        interrupt_on=interrupt_on,
+        middleware=middleware,
+    )
+
+
+def get_agent_graph(resource_id: str = "local", agent_name: str = "main") -> Any:
+    """Get or build a cached agent graph for the given resource and agent.
+
+    Uses a lazy-built cache keyed by (resource_id, agent_name) tuple.
+    This allows different agents to have different tool sets, prompts,
+    and middleware configurations while sharing the same resource backend.
+
+    Args:
+        resource_id: Resource identifier (default "local")
+        agent_name: Agent name - one of ("main", "reviewer", "bookmarker", "onboarding")
+
+    Returns:
+        Compiled LangGraph agent graph (cached on subsequent calls)
+
+    Example:
+        ```python
+        # Get the main agent for local resource
+        graph = get_agent_graph("local", "main")
+
+        # Get reviewer graph
+        reviewer_graph = get_agent_graph("local", "reviewer")
+
+        # Both graphs share the backend but have different tools/prompts
+        ```
+    """
+    key = (resource_id, agent_name)
+    if key not in _AGENT_GRAPH_CACHE:
+        _AGENT_GRAPH_CACHE[key] = _build_agent_graph_for(resource_id, agent_name)
+    return _AGENT_GRAPH_CACHE[key]
+
+
 def create_agent_for_resource(resource: ResourceConfig):  # noqa: ANN201
     if resource.remote_url:
         remote = RemoteGraph(
@@ -1614,37 +1790,63 @@ def create_agent_for_resource(resource: ResourceConfig):  # noqa: ANN201
 
 
 def create_runtime_agent():  # noqa: ANN201
+    """Create a runtime agent graph, with optional per-agent routing.
+
+    In runtime mode, the INTERNAGENT_RUNTIME_AGENT_NAME env var can specify
+    which agent to create (default "main"). This enables runtime-side agent routing.
+    """
+    from internagents.agent_registry import get_agent_config, load_agent_prompt
+
     agent_config = _load_agent_config()
     runtime_id = _env_value("INTERNAGENT_RUNTIME_ID") or "runtime"
+    runtime_agent_name = _env_value("INTERNAGENT_RUNTIME_AGENT_NAME") or "main"
+
+    # Validate agent name
+    try:
+        agent_cfg = get_agent_config(runtime_agent_name)
+    except Exception:
+        # Fall back to "main" if agent not found
+        runtime_agent_name = "main"
+        agent_cfg = get_agent_config("main")
+
     runtime_resource = None
     try:
         _, resources = load_resource_config()
         runtime_resource = resources.get(runtime_id)
     except Exception:
         runtime_resource = None
+
     resolved_skills = _resolve_skills(agent_config)
     backend = _create_runtime_backend(
         agent_config,
         runtime_resource,
         read_only_roots=_skill_read_only_roots(agent_config, resolved_skills),
     )
-    base_prompt = agent_config.get(
-        "system_prompt",
-        (
-            "You are a concise, reliable research assistant for paper reading, "
-            "literature investigation, experiment analysis, code understanding, "
-            "research planning, and local scientific project development."
-        ),
-    )
+
+    # Load agent-specific system prompt if not "main"
+    if runtime_agent_name == "main":
+        base_prompt = agent_config.get(
+            "system_prompt",
+            (
+                "You are a concise, reliable research assistant for paper reading, "
+                "literature investigation, experiment analysis, code understanding, "
+                "research planning, and local scientific project development."
+            ),
+        )
+    else:
+        base_prompt = load_agent_prompt(runtime_agent_name)
+
     system_prompt = (
         f"{base_prompt}\n\n"
         "You are running inside an InternAgentS agent runtime process.\n"
         f"Runtime id: {runtime_id}\n"
+        f"Runtime agent: {runtime_agent_name}\n"
         "The main InternAgentS server coordinates sessions and projects your state to the frontend. "
         "Do not change server network settings, firewall settings, SSH daemon settings, or cloud security-group settings. "
         "If such a change seems necessary, stop and ask the user.\n"
         f"{_office_attachment_prompt()}"
     )
+
     if runtime_resource is not None:
         path_prompt = (
             _logical_path_prompt()
@@ -1664,22 +1866,31 @@ def create_runtime_agent():  # noqa: ANN201
                 else "KB sync is not configured for this runtime."
             )
         )
-    middleware = list(agent_config.get("middleware") or [])
-    if runtime_resource is not None and runtime_resource.kb_path:
-        middleware.append(KbSyncMiddleware(resource=runtime_resource, backend=backend))
-    middleware.append(ImageContentCompatibilityMiddleware())
-    middleware.append(WebSearchBudgetMiddleware())
-    middleware.append(RuntimeDateContextMiddleware())
-    middleware.append(GoalContextMiddleware())
-    middleware.append(_thread_skill_middleware(agent_config, backend))
+
+    # Get all tools and filter by agent config
+    all_tools = _resolve_tools(agent_config)
+    filtered_tools = _filter_tools_by_agent(all_tools, agent_cfg)
+
+    # Build middleware list for this agent
+    middleware = _filter_middlewares_for_agent(
+        agent_config, agent_cfg, backend, runtime_resource
+    )
+
+    # For main agent, add remote compute interrupt support
+    interrupt_on = (
+        _interrupt_on_with_remote_compute(agent_config)
+        if runtime_agent_name == "main"
+        else {}
+    )
+
     return create_deep_agent(
         model=_create_agent_model(),
-        tools=_resolve_tools(agent_config),
+        tools=filtered_tools,
         backend=backend,
         skills=resolved_skills,
         subagents=_thread_skill_subagents(agent_config, backend),
         system_prompt=_agent_system_prompt(system_prompt, agent_config),
-        interrupt_on=_interrupt_on_with_remote_compute(agent_config),
+        interrupt_on=interrupt_on,
         middleware=middleware,
     )
 
@@ -1719,6 +1930,7 @@ def _build_resource_agents() -> tuple[str, dict[str, Any]]:
 
 
 if (_env_value("INTERNAGENT_PROCESS_ROLE") or "").lower() == "runtime":
+    # Runtime mode: create a single runtime agent (may use per-agent routing via env var)
     agent = create_runtime_agent()
     agent_local = agent
     agent_remote1 = agent
@@ -1730,9 +1942,10 @@ if (_env_value("INTERNAGENT_PROCESS_ROLE") or "").lower() == "runtime":
     agent_remote7 = agent
     agent_remote8 = agent
 else:
+    # Coordinator mode: build cached graphs per resource
     _default_resource_id, _resource_agents = _build_resource_agents()
 
-    # Backward-compatible default graph.
+    # Backward-compatible default graph (points to main agent on default resource)
     agent = _resource_agents[_default_resource_id]
 
     # Static exports used by langgraph.json and the UI resource selector.

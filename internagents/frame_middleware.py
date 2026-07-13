@@ -8,6 +8,7 @@ frame objective, same as ordinary chat).
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from html import escape
 from typing import Any, Awaitable, Callable, NotRequired, TypedDict
@@ -27,6 +28,15 @@ from internagents.frame_state import (
     update_frame_status,
     TERMINAL_FRAME_STATUSES,
 )
+
+
+_FRAME_DEBUG = os.getenv("INTERNAGENT_FRAME_DEBUG", "").lower() in {"1", "true", "yes", "on"}
+
+
+def _dbg(msg: str) -> None:
+    """Print a Frame debug line when INTERNAGENT_FRAME_DEBUG=1. Flushed for tail -f."""
+    if _FRAME_DEBUG:
+        print(f"🖼️  [Frame] {msg}", flush=True)
 
 
 class FrameAgentState(TypedDict):
@@ -166,6 +176,12 @@ class FrameRootMiddleware(AgentMiddleware):
 
     def before_agent(self, state, runtime) -> dict | None:
         if not self._needs_new_frame(state):
+            current = _frame_from_state(state)
+            if current is not None:
+                _dbg(
+                    f"Root · SKIP  frame_id={current['id'][:8]} status={current['status']} "
+                    f"(has objective, not terminal)"
+                )
             return None
         objective = _extract_objective_from_messages(state.get("messages", []))
         frame = create_root_frame(
@@ -173,6 +189,10 @@ class FrameRootMiddleware(AgentMiddleware):
             input_data={"objective": objective},
         )
         frame = update_frame_status(frame, "running")
+        _dbg(
+            f"Root · CREATE frame_id={frame['id'][:8]} objective="
+            f"{objective[:80]!r}"
+        )
         return {
             "frame_id": frame["id"],
             "root_frame_id": frame["root_frame_id"],
@@ -210,6 +230,10 @@ class FrameContextMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         frame = _active_frame(request.state or {})
         if frame is not None:
+            _dbg(
+                f"Ctx  · INJECT frame_id={frame['id'][:8]} status={frame['status']} "
+                f"tokens_used={frame.get('tokens_used', 0)}"
+            )
             request = request.override(
                 system_message=_append_to_system_message(
                     request.system_message,
@@ -225,6 +249,10 @@ class FrameContextMiddleware(AgentMiddleware):
     ) -> ModelResponse:
         frame = _active_frame(request.state or {})
         if frame is not None:
+            _dbg(
+                f"Ctx  · INJECT frame_id={frame['id'][:8]} status={frame['status']} "
+                f"tokens_used={frame.get('tokens_used', 0)}"
+            )
             request = request.override(
                 system_message=_append_to_system_message(
                     request.system_message,

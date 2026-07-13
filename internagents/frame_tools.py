@@ -121,6 +121,12 @@ def update_frame(
     except FrameValidationError as exc:
         return {"error": str(exc), **frame_response(current)}
 
+    from internagents.frame_middleware import _dbg
+    _dbg(
+        f"Tool · UPDATE frame_id={current['id'][:8]} "
+        f"{current['status']} → {status}"
+    )
+
     return _command_with_frame(runtime, updated)
 
 

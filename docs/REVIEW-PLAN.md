@@ -180,7 +180,81 @@
 
 ---
 
+### C9 · `<pending>` — Frame auto-lifecycle (β) · 自动创建 + objective 自动捕获 + 工具从 3 减 2 [🟡]
+
+**核心改造**：从"用户手动 `create_frame` 触发"改成"系统自动创建执行单元"，对齐 Claude Science β 方案。
+
+**新增**：
+- `FrameRootMiddleware` 在 `internagents/frame_middleware.py` — 线程启动或上一 frame 变 terminal 时自动创建新 root frame，objective 从最近的 HumanMessage 自动抽取
+- `_extract_objective_from_messages(messages: list[AnyMessage]) -> str` 辅助函数 — 遍历消息历史找最后一条 HumanMessage，支持多模态内容块
+
+**删除**：
+- `create_frame` 工具 — 不再支持工具创建 frame（自动化替代）
+- `FRAME_COMMAND_INSTRUCTIONS` 常量 — 静态注入冗余（动态注入已足够）
+- `frame_system_prompt()` 函数 — 删掉 Goal 时代遗留的"进入 frame mode 说明"
+
+**编辑**：
+- `internagents/frame_middleware.py`：
+  - 修改 `_active_frame()` — 去掉 objective 必需检查（objective 永远存在）
+  - 修改 `render_frame_context()` — 重写措辞，去掉"Continue working within the active frame"和"This frame persists"这类同义反复，改成清晰的"Task context: <objective>...进展跨轮持续...验证真实目标"
+- `internagents/frame_tools.py`：`frame_tools()` 返回 2 个工具而不是 3 个 `[get_frame, update_frame]`
+- `internagents/agent_graph.py`：
+  - import 删 `frame_system_prompt`，加 `FrameRootMiddleware`
+  - `_agent_system_prompt` 改为返回 `base_prompt`（不再拼静态指令）
+  - 两处 middleware 装配点（`_filter_middlewares_for_agent` 和 runtime agent 构建）都加 `FrameRootMiddleware()` 作为第一个 middleware
+- `tests/frame_integration_smoke.py`：删 `frame_system_prompt` import，`test_frame_tools_registered` 期待值改 3→2
+- **新增** `tests/frame_lifecycle_smoke.py` — 8 个 case 验证目标提取 + root middleware 创建逻辑 + 自动转换场景
+
+**β 方案数据流**：
+```
+用户发消息 → LangGraph invoke
+    ↓
+FrameRootMiddleware.before_agent():
+    if (state.frame_id 无) or (frame.status ∈ TERMINAL_FRAME_STATUSES):
+        objective = _extract_objective_from_messages(state.messages)  # 找最近 HumanMessage
+        create_root_frame(..., input_data={"objective": objective})
+        → 返回新 frame 的字段 (frame_id, root_frame_id, ..., input_data)
+    ↓
+FrameContextMiddleware.wrap_model_call():
+    frame = _active_frame(state)       # 无 objective guard，总能拿到
+    system_message += render_frame_context(frame)
+    ↓
+LLM 从第一轮就有 objective 上下文
+    ↓
+LLM 调 update_frame("completed") 或 ("blocked")
+    ↓ state.frame_status = "completed" / "blocked"
+用户后续发新消息
+    ↓ FrameRootMiddleware 检测终止状态 → 开新 frame
+```
+
+**解决的 issue**：
+- **无 Ensure ↔ create_frame 冲突** — 原 C5 时 `FrameEnsureMiddleware` 阻止 `create_frame` 调用的设计矛盾，β 方案根本消除（frame 自动，无手动创建入口）
+- **工具精简** — 从 3→2，专注于"查询"和"标记完成/阻止"
+
+**保留不变**：
+- `FrameState` 数据模型 / `get_frame` / `update_frame` 语义
+- 子 frame 派生（`spawn_reviewer` 等）
+- 路由 / continuation 逻辑
+- 其他 middleware（date / skill / kb_sync）
+
+**净变化**：+95 行新代码 / -40 行删除（create_frame 工具 + 常量 + 函数）
+
+**Review 重点**：
+- `_extract_objective_from_messages` 对多模态内容和 dict-shaped 消息的处理
+- `FrameRootMiddleware._needs_new_frame()` 对 TERMINAL_FRAME_STATUSES 的判定
+- `render_frame_context` 新措辞是否清晰、与旧版"继续"语义对齐
+- `_active_frame` 是否真的不再需要 objective guard
+
+**测试结果**：
+- 旧 6 个 smoke 文件：49→48 case（删 1 个 test_frame_tools_registered 期待值），48/48 绿
+- 新 lifecycle smoke：8 case 全绿
+
+**状态**：🟡 等 review
+
+---
+
 ## Part B · 待修的 5 个已识别问题
+
 
 ### R1 · `_command_with_frame` 写入的字段名 vs `InternAgentState` 定义 [✅ 已修 (C8)]
 

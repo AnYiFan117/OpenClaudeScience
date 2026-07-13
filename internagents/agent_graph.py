@@ -93,7 +93,7 @@ from internagents.dynamic_local_backend import (
     DynamicLocalShellBackendFactory,
 )
 from internagents.date_middleware import RuntimeDateContextMiddleware
-from internagents.frame_middleware import FrameContextMiddleware, FrameEnsureMiddleware, frame_system_prompt
+from internagents.frame_middleware import FrameContextMiddleware, FrameRootMiddleware
 from internagents.frame_state import ACTIVE_FRAME_STATUSES, normalize_frame_state, update_frame_status
 from internagents.frame_tools import frame_tools
 from internagents.internagent_resources import ResourceConfig, load_resource_config
@@ -760,7 +760,7 @@ def _agent_system_prompt(base_prompt: str, agent_config: dict[str, Any]) -> str:
         "self-contained, create harvestable files under `out/` when useful, and "
         "explain that the user must approve the remote job card before it runs."
     )
-    return frame_system_prompt(base_prompt)
+    return base_prompt
 
 
 def _logical_path_prompt() -> str:
@@ -1524,9 +1524,7 @@ def _filter_middlewares_for_agent(
         List of middleware instances to use for this agent
     """
     middleware = []
-
-    # Always add frame middleware first to ensure state consistency
-    middleware.append(FrameEnsureMiddleware())
+    middleware.append(FrameRootMiddleware())
 
     for name in (agent_cfg.middlewares or []):
         if name == "date":
@@ -1760,6 +1758,7 @@ def create_agent_for_resource(resource: ResourceConfig):  # noqa: ANN201
     middleware.append(KbSyncMiddleware(resource=resource, backend=backend))
     middleware.append(ImageContentCompatibilityMiddleware())
     middleware.append(WebSearchBudgetMiddleware())
+    middleware.append(FrameRootMiddleware())
     middleware.append(RuntimeDateContextMiddleware())
     middleware.append(FrameContextMiddleware())
     middleware.append(_thread_skill_middleware(agent_config, backend))

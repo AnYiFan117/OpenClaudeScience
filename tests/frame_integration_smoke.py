@@ -17,21 +17,20 @@ def test_create_root_frame_accepts_frame_id():
 
 
 def test_frame_middleware_importable():
-    """frame_middleware module must expose FrameEnsureMiddleware and FrameContextMiddleware."""
-    from internagents.frame_middleware import FrameEnsureMiddleware, FrameContextMiddleware, frame_system_prompt
-    assert FrameEnsureMiddleware is not None
+    """frame_middleware module must expose FrameContextMiddleware and FrameRootMiddleware."""
+    from internagents.frame_middleware import FrameContextMiddleware, FrameRootMiddleware
     assert FrameContextMiddleware is not None
-    assert frame_system_prompt("base") != "base", "frame_system_prompt must append instructions"
-    print("✅ FrameEnsureMiddleware, FrameContextMiddleware, frame_system_prompt are importable")
+    assert FrameRootMiddleware is not None
+    print("✅ FrameContextMiddleware, FrameRootMiddleware are importable")
 
 
 def test_frame_tools_registered():
-    """frame_tools() must return exactly three tools with renamed names."""
+    """frame_tools() must return exactly two tools."""
     from internagents.frame_tools import frame_tools
     tools = frame_tools()
     names = [t.name for t in tools]
-    assert names == ["get_frame", "create_frame", "update_frame"], f"unexpected tool names: {names}"
-    print("✅ frame_tools returns get_frame / create_frame / update_frame")
+    assert names == ["get_frame", "update_frame"], f"unexpected tool names: {names}"
+    print("✅ frame_tools returns get_frame / update_frame")
 
 
 def test_agent_registry_uses_frame_middleware():

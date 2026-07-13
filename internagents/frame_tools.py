@@ -1,8 +1,7 @@
-"""LangChain tools that let the agent manage the persistent thread frame.
+"""LangChain tools that let the agent query and manage the persistent thread frame.
 
 A Frame represents the active execution unit for a thread. Tools:
 - get_frame: read current frame state (objective, status, budget, elapsed)
-- create_frame: create a new active frame with an objective (only when user explicitly asks for frame mode)
 - update_frame: mark the current frame `completed` or `blocked`
 """
 
@@ -103,40 +102,6 @@ def get_frame(runtime: ToolRuntime) -> dict[str, Any]:
     return frame_response(_current_frame(runtime))
 
 
-@tool("create_frame")
-def create_frame(
-    objective: str,
-    runtime: ToolRuntime,
-    token_budget: int | None = None,
-) -> Command | dict[str, Any]:
-    """Create a new active frame only when the user explicitly asks for persistent frame mode.
-
-    Use token_budget only when the user explicitly provides a positive token budget.
-    This fails when this thread already has an active frame; terminal frames can be replaced
-    by a new active frame.
-    """
-    current = _current_frame(runtime)
-    if current is not None and current.get("status") in ACTIVE_FRAME_STATUSES:
-        return {
-            "error": "cannot create a new frame because this thread already has an active frame",
-            **frame_response(current),
-        }
-
-    try:
-        frame = create_root_frame(
-            agent_name="main",
-            input_data={"objective": objective},
-            frame_id=_thread_id(runtime),
-            token_budget=token_budget,
-        )
-    except FrameValidationError as exc:
-        return {"error": str(exc), "frame": None, "remainingTokens": None}
-
-    # Newly-created frame becomes active immediately (running)
-    frame = update_frame_status(frame, "running")
-    return _command_with_frame(runtime, frame)
-
-
 @tool("update_frame")
 def update_frame(
     status: Literal["completed", "blocked"],
@@ -160,4 +125,4 @@ def update_frame(
 
 
 def frame_tools() -> list[Any]:
-    return [get_frame, create_frame, update_frame]
+    return [get_frame, update_frame]

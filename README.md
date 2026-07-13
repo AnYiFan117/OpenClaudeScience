@@ -55,6 +55,16 @@ scientific work.
   PDFs, Office files, images, molecular structures, scientific data outputs, and
   generated artifacts.
 
+## Web Mode (No Desktop App Needed)
+
+InternAgentS runs as a local webapp accessible from any browser. To start without Electron:
+
+```bash
+bash scripts/web.sh
+```
+
+Then open http://127.0.0.1:3000 in your browser. See [docs/webapp.md](docs/webapp.md) for details, environment overrides, and troubleshooting.
+
 ## Example Workflows
 
 - Paper and report triage: attach papers or Markdown reports, ask the agent to

@@ -8,7 +8,6 @@ frame objective, same as ordinary chat).
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from html import escape
 from typing import Any, Awaitable, Callable, NotRequired, TypedDict
@@ -189,36 +188,13 @@ class FrameRootMiddleware(AgentMiddleware):
         return self.before_agent(state, runtime)
 
 
-
-def _recover_frame_from_messages(messages: Any) -> FrameState | None:
-    """Scan tool messages for the most recent create_frame / update_frame payload."""
-    if not isinstance(messages, list):
-        return None
-
-    for message in reversed(messages):
-        name = getattr(message, "name", None)
-        content = getattr(message, "content", None)
-        if name is None and isinstance(message, dict):
-            name = message.get("name")
-            content = message.get("content")
-        if name not in {"create_frame", "update_frame"} or not isinstance(content, str):
-            continue
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError:
-            continue
-        frame = normalize_frame_state(payload.get("frame"))
-        if frame is not None:
-            return frame
-    return None
-
-
 @dataclass
 class FrameContextMiddleware(AgentMiddleware):
     """Adds the active frame's objective + budget to each model request.
 
-    Reads frame_id / input_data / tokens_used / time_used_seconds from top-level state
-    (as written by frame_tools.create_frame / update_frame). Does not persist prompt text.
+    Reads frame_* fields from top-level state (populated by FrameRootMiddleware
+    at thread start, and by frame_tools.update_frame on status transitions).
+    Does not persist prompt text.
     """
 
     state_schema = FrameAgentState
@@ -226,31 +202,6 @@ class FrameContextMiddleware(AgentMiddleware):
     @property
     def name(self) -> str:
         return "FrameContextMiddleware"
-
-    def before_agent(self, state: dict[str, Any], runtime: Any) -> dict[str, Any] | None:
-        if _frame_from_state(state) is not None:
-            return None
-        recovered = _recover_frame_from_messages(state.get("messages"))
-        if recovered is None:
-            return None
-        return {
-            "frame_id": recovered["id"],
-            "root_frame_id": recovered.get("root_frame_id"),
-            "parent_frame_id": recovered.get("parent_frame_id"),
-            "agent_name": recovered.get("agent_name"),
-            "frame_status": recovered.get("status"),
-            "tokens_used": recovered.get("tokens_used", 0),
-            "time_used_seconds": recovered.get("time_used_seconds", 0),
-            "input_data": recovered.get("input_data"),
-            "evolution_context": recovered.get("evolution_context"),
-        }
-
-    async def abefore_agent(
-        self,
-        state: dict[str, Any],
-        runtime: Any,
-    ) -> dict[str, Any] | None:
-        return self.before_agent(state, runtime)
 
     def wrap_model_call(
         self,

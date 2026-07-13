@@ -1587,6 +1587,27 @@ def _filter_middlewares_for_agent(
 
 
 
+def _resolve_resource(resource_id: str) -> ResourceConfig:
+    """Resolve a resource by ID from the configured resources.
+
+    Args:
+        resource_id: Resource identifier (e.g., "local", "remote1")
+
+    Returns:
+        ResourceConfig for the given resource_id
+
+    Raises:
+        ValueError: If resource_id is not found in configured resources
+    """
+    _, resources = load_resource_config()
+    if resource_id not in resources:
+        raise ValueError(
+            f"Resource {resource_id!r} is not configured in resources. "
+            f"Available: {list(resources.keys())}"
+        )
+    return resources[resource_id]
+
+
 def _build_agent_graph_for(
     resource_id: str,
     agent_name: str,
@@ -1663,6 +1684,9 @@ def get_agent_graph(resource_id: str = "local", agent_name: str = "main") -> Any
     Uses a lazy-built cache keyed by (resource_id, agent_name) tuple.
     This allows different agents to have different tool sets, prompts,
     and middleware configurations while sharing the same resource backend.
+
+    Called by module-level `agent_local` export (and optionally by frame service for
+    spawning per-agent child graphs).
 
     Args:
         resource_id: Resource identifier (default "local")
@@ -1952,7 +1976,11 @@ else:
     _default_resource_id, _resource_agents = _build_resource_agents()
 
     # Backward-compatible default graph (points to main agent on default resource)
-    agent = _resource_agents[_default_resource_id]
+    # For local resource, route through get_agent_graph to apply per-agent filtering.
+    if _default_resource_id == "local":
+        agent = get_agent_graph("local", "main")
+    else:
+        agent = _resource_agents[_default_resource_id]
 
     # Static exports used by langgraph.json and the UI resource selector.
     # For local resource, route through get_agent_graph to apply per-agent filtering.

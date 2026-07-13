@@ -1,4 +1,8 @@
-"""LangChain tools that let the agent manage persistent thread goals."""
+"""LangChain tools that let the agent manage persistent thread goals.
+
+Internally uses Frame as source of truth; Goal is derived as a backward-compat view
+via goal_from_frame for compatibility with legacy code.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +17,6 @@ from internagents.frame_state import create_root_frame, goal_from_frame, update_
 from internagents.goal_state import (
     GoalState,
     GoalValidationError,
-    create_goal_state,
     goal_response,
     normalize_goal_state,
     update_goal_status,
@@ -41,12 +44,15 @@ def _tool_message(runtime: ToolRuntime, payload: dict[str, Any]) -> ToolMessage:
     )
 
 
-def _command_with_goal(runtime: ToolRuntime, goal: GoalState, frame: dict[str, Any] | None = None) -> Command:
-    """Create a Command to update state with goal (and optional frame).
+def _command_with_frame(runtime: ToolRuntime, goal: GoalState, frame: dict[str, Any] | None = None) -> Command:
+    """Create a Command to update state with frame and goal (derived view).
+
+    Since Frame is the source of truth and Goal is derived for backward compatibility,
+    this function writes Frame fields to state and derives the Goal view from it.
 
     Args:
         runtime: the ToolRuntime from LangChain
-        goal: the new GoalState
+        goal: the new GoalState (derived from frame)
         frame: optional FrameState to also update in state
 
     Returns:
@@ -115,7 +121,7 @@ def create_goal(
     except GoalValidationError as exc:
         return {"error": str(exc), "goal": None, "remainingTokens": None}
 
-    return _command_with_goal(runtime, goal, frame=frame)
+    return _command_with_frame(runtime, goal, frame=frame)
 
 
 @tool("update_goal")
@@ -161,7 +167,7 @@ def update_goal(
         }
         frame_update = synthetic_frame
 
-    return _command_with_goal(runtime, goal, frame=frame_update)
+    return _command_with_frame(runtime, goal, frame=frame_update)
 
 
 def goal_tools() -> list[Any]:

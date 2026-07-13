@@ -17,6 +17,13 @@ from internagents.frame_state import (
 )
 
 
+def test_blocked_status_valid():
+    """validate_frame_status must accept 'blocked' as a valid terminal status."""
+    from internagents.frame_state import validate_frame_status
+    assert validate_frame_status("blocked") == "blocked"
+    print("✅ test_blocked_status_valid")
+
+
 def test_root_frame_created():
     """Root frame must have id == root_frame_id and no parent."""
     f = create_root_frame(agent_name="main", input_data={"query": "hi"})
@@ -165,6 +172,7 @@ def test_system_prompt_optional():
 def run_all_tests():
     """Run all smoke tests."""
     tests = [
+        test_blocked_status_valid,
         test_root_frame_created,
         test_child_frame_derived,
         test_invalid_agent_name,

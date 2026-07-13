@@ -470,42 +470,6 @@ class InternAgentState(TypedDict):
     evolution_context: NotRequired[dict[str, Any]]
 
 
-def _ensure_frame_state(state: dict[str, Any]) -> dict[str, Any]:
-    """Ensure state has required frame fields for backward compatibility.
-
-    If state came from legacy invoke (no frame_id), populate defaults from
-    goal or generate new ones. This allows existing code to work with both
-    legacy GoalState-only invokes and new Frame-aware invokes.
-
-    Args:
-        state: the LangGraph state dict
-
-    Returns:
-        State with frame fields ensured (mutated in-place)
-    """
-    if "frame_id" not in state or not state.get("frame_id"):
-        # Legacy path: synthesize a root frame from goal or scratch
-        from internagents.frame_state import create_root_frame
-
-        goal = state.get("goal")
-        input_data = {}
-        if isinstance(goal, dict) and goal.get("objective"):
-            input_data = {"objective": goal["objective"]}
-
-        defaults = create_root_frame(agent_name="main", input_data=input_data)
-
-        # Merge defaults into state, preserving existing fields
-        state["frame_id"] = state.get("frame_id") or defaults["id"]
-        state["root_frame_id"] = state.get("root_frame_id") or defaults["root_frame_id"]
-        state["parent_frame_id"] = state.get("parent_frame_id") or defaults.get("parent_frame_id")
-        state["agent_name"] = state.get("agent_name") or defaults["agent_name"]
-        state["frame_status"] = state.get("frame_status") or defaults["status"]
-        if "tokens_used" not in state:
-            state["tokens_used"] = defaults["tokens_used"]
-        if "time_used_seconds" not in state:
-            state["time_used_seconds"] = defaults["time_used_seconds"]
-
-    return state
 
 
 def _load_agent_config() -> dict[str, Any]:

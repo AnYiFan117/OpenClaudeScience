@@ -24,7 +24,7 @@ from langchain_core.messages import AnyMessage
 from internagents.goal_state import GoalState
 
 
-FrameStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
+FrameStatus = Literal["pending", "running", "completed", "failed", "cancelled", "blocked"]
 AgentName = Literal["main", "reviewer", "bookmarker", "onboarding"]
 
 
@@ -97,7 +97,7 @@ def validate_agent_name(agent_name: AgentName) -> AgentName:
 
 def validate_frame_status(status: FrameStatus) -> FrameStatus:
     """Validate and return a frame status."""
-    valid_statuses: set[FrameStatus] = {"pending", "running", "completed", "failed", "cancelled"}
+    valid_statuses: set[FrameStatus] = {"pending", "running", "completed", "failed", "cancelled", "blocked"}
     if status not in valid_statuses:
         raise FrameValidationError(
             f"status must be one of {valid_statuses}, got {status!r}"
@@ -286,7 +286,7 @@ def frame_with_elapsed(frame: FrameState, *, now: int | None = None) -> FrameSta
     """Return a frame with updated time_used_seconds based on elapsed time.
 
     If the frame is still running, recalculates time_used_seconds.
-    If terminal (completed/failed/cancelled), returns unchanged.
+    If terminal (completed/failed/cancelled/blocked), returns unchanged.
 
     Args:
         frame: the FrameState to update
@@ -295,7 +295,7 @@ def frame_with_elapsed(frame: FrameState, *, now: int | None = None) -> FrameSta
     Returns:
         Updated FrameState (original unchanged)
     """
-    if frame.get("status") in {"completed", "failed", "cancelled"}:
+    if frame.get("status") in {"completed", "failed", "cancelled", "blocked"}:
         return frame
 
     timestamp = unix_seconds() if now is None else now

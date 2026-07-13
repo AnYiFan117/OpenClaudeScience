@@ -9,6 +9,7 @@ from langchain.tools import ToolRuntime, tool
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
+from internagents.frame_state import create_root_frame, goal_from_frame, update_frame_status
 from internagents.goal_state import (
     GoalState,
     GoalValidationError,
@@ -40,9 +41,31 @@ def _tool_message(runtime: ToolRuntime, payload: dict[str, Any]) -> ToolMessage:
     )
 
 
-def _command_with_goal(runtime: ToolRuntime, goal: GoalState) -> Command:
+def _command_with_goal(runtime: ToolRuntime, goal: GoalState, frame: dict[str, Any] | None = None) -> Command:
+    """Create a Command to update state with goal (and optional frame).
+
+    Args:
+        runtime: the ToolRuntime from LangChain
+        goal: the new GoalState
+        frame: optional FrameState to also update in state
+
+    Returns:
+        A Command with goal (and frame if provided) updates
+    """
     payload = goal_response(goal)
-    return Command(update={"goal": goal, "messages": [_tool_message(runtime, payload)]})
+    update_dict = {"goal": goal, "messages": [_tool_message(runtime, payload)]}
+
+    # If a frame is provided, also update frame fields in state
+    if frame:
+        update_dict["frame_id"] = frame.get("id")
+        update_dict["root_frame_id"] = frame.get("root_frame_id")
+        update_dict["parent_frame_id"] = frame.get("parent_frame_id")
+        update_dict["agent_name"] = frame.get("agent_name")
+        update_dict["frame_status"] = frame.get("status")
+        update_dict["tokens_used"] = frame.get("tokens_used", 0)
+        update_dict["time_used_seconds"] = frame.get("time_used_seconds", 0)
+
+    return Command(update=update_dict)
 
 
 @tool("get_goal")
@@ -63,6 +86,8 @@ def create_goal(
     Use token_budget only when the user explicitly provides a positive token budget.
     This fails when this thread already has an active goal; terminal goals can be replaced
     by a new active goal.
+
+    Internally creates a Frame first, then derives a Goal view from it for backward compatibility.
     """
 
     current = _current_goal(runtime)
@@ -73,15 +98,24 @@ def create_goal(
         }
 
     try:
-        goal = create_goal_state(
-            objective,
-            token_budget=token_budget,
-            thread_id=_thread_id(runtime),
+        # Create frame first with input data
+        frame = create_root_frame(
+            agent_name="main",
+            input_data={"objective": objective, "token_budget": token_budget} if token_budget else {"objective": objective},
+            frame_id=_thread_id(runtime),  # pin frame_id to thread_id if available
         )
+
+        # Derive goal from frame
+        goal = goal_from_frame(frame)
+
+        # Preserve token budget in goal
+        if token_budget is not None:
+            goal["tokenBudget"] = token_budget
+
     except GoalValidationError as exc:
         return {"error": str(exc), "goal": None, "remainingTokens": None}
 
-    return _command_with_goal(runtime, goal)
+    return _command_with_goal(runtime, goal, frame=frame)
 
 
 @tool("update_goal")
@@ -93,6 +127,8 @@ def update_goal(
 
     Set complete only after the objective is achieved and verified. Set blocked only when meaningful
     progress cannot continue without user input or an external-state change.
+
+    Also updates the corresponding Frame status if present in state.
     """
 
     current = _current_goal(runtime)
@@ -104,7 +140,28 @@ def update_goal(
     except GoalValidationError as exc:
         return {"error": str(exc), **goal_response(current)}
 
-    return _command_with_goal(runtime, goal)
+    # Map goal status to frame status
+    frame_status_map = {"complete": "completed", "blocked": "blocked"}
+    frame_status = frame_status_map.get(status, "running")
+
+    # Create a synthetic frame update if frame_id exists in state
+    frame_update = None
+    if hasattr(runtime, "state") and isinstance(runtime.state, dict) and runtime.state.get("frame_id"):
+        from internagents.frame_state import FrameState
+        synthetic_frame: FrameState = {
+            "id": runtime.state.get("frame_id", current["id"]),
+            "root_frame_id": runtime.state.get("root_frame_id", current.get("threadId", current["id"])),
+            "agent_name": runtime.state.get("agent_name", "main"),
+            "status": frame_status,
+            "messages": [],
+            "tokens_used": runtime.state.get("tokens_used", 0),
+            "time_used_seconds": runtime.state.get("time_used_seconds", 0),
+            "created_at": current.get("createdAt", 0),
+            "updated_at": current.get("updatedAt", 0),
+        }
+        frame_update = synthetic_frame
+
+    return _command_with_goal(runtime, goal, frame=frame_update)
 
 
 def goal_tools() -> list[Any]:

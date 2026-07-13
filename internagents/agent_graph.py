@@ -1562,7 +1562,12 @@ def _filter_middlewares_for_agent(
     Returns:
         List of middleware instances to use for this agent
     """
+    from internagents.frame_middleware import FrameEnsureMiddleware
+
     middleware = []
+
+    # Always add frame middleware first to ensure state consistency
+    middleware.append(FrameEnsureMiddleware())
 
     for name in (agent_cfg.middlewares or []):
         if name == "date":
@@ -1579,6 +1584,7 @@ def _filter_middlewares_for_agent(
     middleware.append(WebSearchBudgetMiddleware())
 
     return middleware
+
 
 
 def _build_agent_graph_for(
@@ -1949,7 +1955,9 @@ else:
     agent = _resource_agents[_default_resource_id]
 
     # Static exports used by langgraph.json and the UI resource selector.
-    agent_local = _resource_agents.get("local", agent)
+    # For local resource, route through get_agent_graph to apply per-agent filtering.
+    # Remote resources use the proxy-only pattern (create_agent_for_resource with remote_url).
+    agent_local = get_agent_graph("local", "main")
     agent_remote1 = _resource_agents.get("remote1") or create_missing_resource_agent(
         "remote1"
     )

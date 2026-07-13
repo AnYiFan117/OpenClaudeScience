@@ -110,6 +110,7 @@ def create_root_frame(
     agent_name: AgentName = "main",
     input_data: dict[str, Any] | None = None,
     system_prompt: str | None = None,
+    frame_id: str | None = None,
     now: int | None = None,
 ) -> FrameState:
     """Create a new root frame (no parent, root_frame_id = id).
@@ -118,17 +119,21 @@ def create_root_frame(
         agent_name: which agent will execute this frame (default "main")
         input_data: user input that triggered this frame
         system_prompt: optional system prompt to use
+        frame_id: optional explicit frame ID (for LangGraph thread pinning). If None, generates a UUID.
         now: override current timestamp (for testing)
 
     Returns:
         A new pending root FrameState
 
     Raises:
-        FrameValidationError: if agent_name is invalid
+        FrameValidationError: if agent_name or frame_id is invalid
     """
     agent_name = validate_agent_name(agent_name)
     timestamp = unix_seconds() if now is None else now
-    frame_id = str(uuid.uuid4())
+    if frame_id is None:
+        frame_id = str(uuid.uuid4())
+    else:
+        frame_id = validate_frame_id(frame_id)
 
     frame: FrameState = {
         "id": frame_id,

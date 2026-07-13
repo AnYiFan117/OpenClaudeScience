@@ -21,11 +21,12 @@ from typing import Any, Literal, NotRequired, TypedDict
 
 from langchain_core.messages import AnyMessage
 
-from internagents.goal_state import GoalState
-
 
 FrameStatus = Literal["pending", "running", "completed", "failed", "cancelled", "blocked"]
 AgentName = Literal["main", "reviewer", "bookmarker", "onboarding"]
+TERMINAL_FRAME_STATUSES: set[FrameStatus] = {"completed", "failed", "cancelled", "blocked"}
+ACTIVE_FRAME_STATUSES: set[FrameStatus] = {"pending", "running"}
+MAX_FRAME_OBJECTIVE_CHARS = 4_000
 
 
 class FrameValidationError(ValueError):
@@ -105,12 +106,34 @@ def validate_frame_status(status: FrameStatus) -> FrameStatus:
     return status
 
 
+def validate_frame_objective(objective: str) -> str:
+    """Validate and normalize a frame objective string."""
+    normalized = str(objective).strip()
+    if not normalized:
+        raise FrameValidationError("frame objective must not be empty")
+    if len(normalized) > MAX_FRAME_OBJECTIVE_CHARS:
+        raise FrameValidationError(
+            f"frame objective must be at most {MAX_FRAME_OBJECTIVE_CHARS} characters"
+        )
+    return normalized
+
+
+def validate_token_budget(token_budget: int | None) -> int | None:
+    """Validate an optional positive-integer token budget."""
+    if token_budget is None:
+        return None
+    if not isinstance(token_budget, int) or token_budget <= 0:
+        raise FrameValidationError("token budget must be a positive integer")
+    return token_budget
+
+
 def create_root_frame(
     *,
     agent_name: AgentName = "main",
     input_data: dict[str, Any] | None = None,
     system_prompt: str | None = None,
     frame_id: str | None = None,
+    token_budget: int | None = None,
     now: int | None = None,
 ) -> FrameState:
     """Create a new root frame (no parent, root_frame_id = id).
@@ -120,13 +143,14 @@ def create_root_frame(
         input_data: user input that triggered this frame
         system_prompt: optional system prompt to use
         frame_id: optional explicit frame ID (for LangGraph thread pinning). If None, generates a UUID.
+        token_budget: optional positive-integer token budget (stored in evolution_context["token_budget"])
         now: override current timestamp (for testing)
 
     Returns:
         A new pending root FrameState
 
     Raises:
-        FrameValidationError: if agent_name or frame_id is invalid
+        FrameValidationError: if agent_name, frame_id, or token_budget is invalid
     """
     agent_name = validate_agent_name(agent_name)
     timestamp = unix_seconds() if now is None else now
@@ -153,6 +177,10 @@ def create_root_frame(
 
     if system_prompt is not None:
         frame["system_prompt"] = system_prompt
+
+    budget = validate_token_budget(token_budget)
+    if budget is not None:
+        frame["evolution_context"] = {"token_budget": budget}
 
     return frame
 
@@ -295,7 +323,7 @@ def frame_with_elapsed(frame: FrameState, *, now: int | None = None) -> FrameSta
     Returns:
         Updated FrameState (original unchanged)
     """
-    if frame.get("status") in {"completed", "failed", "cancelled", "blocked"}:
+    if frame.get("status") in TERMINAL_FRAME_STATUSES:
         return frame
 
     timestamp = unix_seconds() if now is None else now
@@ -339,77 +367,38 @@ def update_frame_status(
     return updated
 
 
-def frame_from_goal(goal: GoalState) -> FrameState:
-    """Convert a legacy GoalState to a FrameState for backward compatibility.
+def frame_response(frame: FrameState | None, *, now: int | None = None) -> dict[str, Any]:
+    """Render a Frame as a tool-response payload.
 
-    Maps GoalState.objective → FrameState.input_data["objective"]
-    Maps GoalState.tokenBudget → carried in evolution_context
-
-    Args:
-        goal: a GoalState TypedDict
-
-    Returns:
-        A new FrameState with equivalent data
-    """
-    frame_id = goal.get("id", str(uuid.uuid4()))
-    now = unix_seconds()
-
-    frame: FrameState = {
-        "id": frame_id,
-        "root_frame_id": goal.get("threadId") or frame_id,
-        "parent_frame_id": None,
-        "agent_name": "main",
-        "status": "pending",  # type: ignore
-        "messages": [],
-        "tokens_used": goal.get("tokensUsed", 0),
-        "time_used_seconds": goal.get("timeUsedSeconds", 0),
-        "created_at": goal.get("createdAt", now),
-        "updated_at": goal.get("updatedAt", now),
-    }
-
-    if goal.get("objective"):
-        frame["input_data"] = {"objective": goal["objective"]}
-
-    if goal.get("tokenBudget"):
-        frame["evolution_context"] = {"legacy_token_budget": goal["tokenBudget"]}
-
-    return frame
-
-
-def goal_from_frame(frame: FrameState) -> GoalState:
-    """Convert a FrameState back to a GoalState for backward compatibility.
-
-    Used by goal_middleware and existing code that expects GoalState.
+    Includes elapsed time and remaining token budget (if any) for the model to reason about.
 
     Args:
-        frame: a FrameState TypedDict
+        frame: the FrameState or None
+        now: override current timestamp (for testing)
 
     Returns:
-        A new GoalState with equivalent data
+        dict with keys "frame" and "remainingTokens"
     """
-    objective = ""
-    if isinstance(frame.get("input_data"), dict):
-        objective = frame["input_data"].get("objective", "")
-
-    goal: GoalState = {
-        "id": frame["id"],
-        "objective": objective or frame.get("system_prompt", ""),
-        "status": "active",  # type: ignore
-        "tokensUsed": frame.get("tokens_used", 0),
-        "timeUsedSeconds": frame.get("time_used_seconds", 0),
-        "createdAt": frame.get("created_at", unix_seconds()),
-        "updatedAt": frame.get("updated_at", unix_seconds()),
+    elapsed_frame = frame_with_elapsed(frame, now=now) if frame else None
+    remaining_tokens = None
+    if elapsed_frame:
+        budget = _extract_token_budget(elapsed_frame)
+        if isinstance(budget, int):
+            remaining_tokens = max(0, budget - elapsed_frame.get("tokens_used", 0))
+    return {
+        "frame": elapsed_frame,
+        "remainingTokens": remaining_tokens,
     }
 
-    if frame.get("root_frame_id"):
-        goal["threadId"] = frame["root_frame_id"]
 
-    if isinstance(frame.get("evolution_context"), dict):
-        budget = frame["evolution_context"].get("legacy_token_budget")
+def _extract_token_budget(frame: FrameState) -> int | None:
+    """Read token_budget from evolution_context if present."""
+    ctx = frame.get("evolution_context")
+    if isinstance(ctx, dict):
+        budget = ctx.get("token_budget")
         if isinstance(budget, int) and budget > 0:
-            goal["tokenBudget"] = budget
-
-    return goal
+            return budget
+    return None
 
 
 def _int_or_default(value: Any, default: int) -> int:

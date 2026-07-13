@@ -2,10 +2,10 @@
 
 > **活的 review 追踪文档**。每 review 一项，在 status 里改标记。等所有 R1-R5 处理完，本文档可以删掉再 merge。
 
-**分支**：`feature/frame-agents`（从 `main` 分出 7 commits）
-**当前 head**：`ab950bc`
-**测试**：45/45 全绿
-**净增量**：18 files / +4489 / -50 行
+**分支**：`feature/frame-agents`（从 `main` 分出 8 commits）
+**当前 head**：`<pending frame-migration commit>`
+**测试**：49/49 全绿
+**净增量**：新增 frame_tools.py；删除 goal_state.py / goal_middleware.py / goal_tools.py / test_goal_state.py
 
 ---
 
@@ -134,9 +134,55 @@
 
 ---
 
+### C8 · `<pending>` — Frame 完全替代 Goal · 删除 goal_* 模块 [🟡]
+
+**核心决定**：不做派生视图。Goal 概念从代码库彻底移除，Frame 是唯一的执行单元表达。
+
+**新增文件**：
+- `internagents/frame_tools.py`（约 155 行）— 新的 3 个 tool：`get_frame`、`create_frame`、`update_frame`（tool 名 R5 决定：**改名**，与新概念对齐）
+
+**改写文件**：
+- `internagents/frame_state.py`：删掉 `frame_from_goal` / `goal_from_frame` 桥接函数；新增 `TERMINAL_FRAME_STATUSES`、`ACTIVE_FRAME_STATUSES`、`MAX_FRAME_OBJECTIVE_CHARS`、`validate_frame_objective`、`validate_token_budget`、`frame_response`（GoalState 五大等效原语的 Frame 版本）；`create_root_frame` 加 `token_budget` 参数（存到 evolution_context）
+- `internagents/frame_middleware.py`：从"只填 state 字段"升级到"能替代 GoalContextMiddleware 全部功能"。新增 `FRAME_COMMAND_INSTRUCTIONS`、`frame_system_prompt`、`render_frame_context`（把 objective + budget 注入 system message）、`FrameContextMiddleware`（带 `before_agent` 和 `wrap_model_call`）、`_active_frame`、`_recover_frame_from_messages`
+- `internagents/agent_graph.py`：
+  - imports 全部换成 `frame_*`
+  - `GOAL_CONTINUATION_TURNS_KEY = "goalContinuationTurns"` → `FRAME_CONTINUATION_TURNS_KEY = "frameContinuationTurns"`
+  - `GOAL_MAX_AUTO_TURNS_ENV` → `FRAME_MAX_AUTO_TURNS_ENV`
+  - `InternAgentState`：删除 `goal` 字段；`goalContinuationTurns` → `frameContinuationTurns`；加 `input_data`/`output_data`
+  - `_goal_status/_goal_continuation_turns/_with_goal_continuation_accounting/_should_continue_goal/_goal_blocked_after_remote_runtime_error` 全部改名 `_frame_*`；逻辑改为读 `state["frame_status"]`
+  - `GoalContextMiddleware()` → `FrameContextMiddleware()`（两处）
+  - `goal_system_prompt` → `frame_system_prompt`
+  - `goal_tools()` → `frame_tools()`
+- `internagents/agent_registry.py`：`middlewares` tuple 里 `"goal"` → `"frame"`
+
+**删除文件**：
+- `internagents/goal_state.py` （148 行删除）
+- `internagents/goal_middleware.py` （161 行删除）
+- `internagents/goal_tools.py` （174 行删除）
+- `tests/test_goal_state.py` （101 行删除）
+
+**改写测试**：
+- `tests/frame_state_smoke.py`：删除 `test_goal_bridge_*` 两个测试；新增 `test_validate_frame_objective` / `test_validate_token_budget` / `test_root_frame_with_token_budget` / `test_frame_response_shape` / `test_status_sets_disjoke`（共 16 case）
+- `tests/frame_integration_smoke.py`：删除 `test_goal_from_frame_shape`、`test_goal_tools_imports_frame_state`；新增 `test_frame_tools_registered`、`test_agent_registry_uses_frame_middleware`、`test_agent_graph_no_goal_imports`（6 case）
+
+**净变化**：+476 / -824（-348 行代码）
+
+**同时解决**：
+- R1 ✅ 字段名统一 `frame_id` / `frame_status`（`_command_with_frame` 与 `InternAgentState` 一致）
+- R5 ✅ Tool 名决策：**改名**（`create_goal`→`create_frame` 等）
+
+**Review 重点**：
+- `FrameContextMiddleware` 是否真能替代 `GoalContextMiddleware`（render_frame_context 内容对不对，system message 拼接位置）
+- `_command_with_frame` 写入 state 的字段与 `InternAgentState` 定义完全一致
+- `frame_middleware.py` 与 `frame_tools.py` 各自的 `_frame_from_state` 逻辑一致（当前是两处，可能应该抽公用）
+
+**状态**：🟡 等 review
+
+---
+
 ## Part B · 待修的 5 个已识别问题
 
-### R1 · `_command_with_frame` 写入的字段名 vs `InternAgentState` 定义 [🔴 需修]
+### R1 · `_command_with_frame` 写入的字段名 vs `InternAgentState` 定义 [✅ 已修 (C8)]
 
 **问题**：`goal_tools.py:_command_with_frame` 往 state 写 7 个字段：
 ```
@@ -151,16 +197,9 @@ time_used_seconds / input_data / output_data / system_prompt / skills_attached /
 mcp_servers_attached
 ```
 
-**冲突**：`frame_id` vs `id`；`frame_status` vs `status`。同一个 Frame 数据，两处用不同字段名，LangGraph state 里会**分裂成两组**。
+**修复方案**：C8 里把 `InternAgentState` 的 `id`/`status` 都统一为 `frame_id`/`frame_status`；`frame_tools.py:_command_with_frame` 写入的字段与 `InternAgentState` 完全一致。
 
-**建议**：统一。我推荐用 `frame_id` / `frame_status`（避免和 langgraph 的通用 `status` 冲突），把 InternAgentState 里的 `id` / `status` 改成 `frame_id` / `frame_status`。
-
-**影响文件**：
-- `agent_graph.py:457-475`（改 InternAgentState 字段名）
-- `frame_middleware.py`（`_ensure_frame_state` 早已删，middleware 用的是 `frame_id` — 正确）
-- 各测试文件（如果测的是老字段名）
-
-**状态**：🔴 未修，等你确认命名方案
+**状态**：✅ 已修（C8）
 
 ---
 
@@ -231,25 +270,11 @@ except Exception as e:
 
 ---
 
-### R5 · 公开 tool 名 `create_goal` / `update_goal` / `get_goal` 未 rename [⚠️ 决策]
+### R5 · 公开 tool 名 `create_goal` / `update_goal` / `get_goal` [✅ 已改名 (C8)]
 
-**问题**：内部逻辑已 Frame-first，但**公开 tool 名字**仍是 `create_goal` / `update_goal` / `get_goal`。这些是 agent 通过 tool_use 调的名字，写在 main.yaml prompt 里。
+**决定**：全部改名 → `create_frame` / `update_frame` / `get_frame`。理由：既然 Goal 概念从代码库完全消失，工具名保留 goal 会造成 agent 侧和 code 侧的语义脱节。
 
-**如果 rename** 成 `create_frame` / `update_frame` / `get_frame`：
-- 要改 `goal_tools.py` 的 `@tool()` decorator
-- 要改 `main.yaml` 里所有引用 `create_goal` / `update_goal` / `get_goal` 的提示词
-- 要改 `reviewer.yaml` / 其它 YAML 如果有引用
-- 要改任何测试
-- **半天工作量**
-
-**如果不 rename**：
-- 保留 tool 名 = 保留 "goal" 概念在 agent 侧的语言表达
-- 内部 Frame 是实现细节，agent 不需要知道
-- backward compat 度更高
-
-**建议**：**不 rename**。tool 名代表 agent 的用户界面，Frame 是实现——两者可以名不一样。类似 REST API 保留 `/api/goals` 端点，但内部数据是 Frame。
-
-**状态**：⚠️ 等你决策 rename or 不 rename
+**状态**：✅ 已改名（C8）
 
 ---
 
@@ -355,14 +380,21 @@ _每次你批准 / 否决 / 提出修改，在此更新_
 ## 附录：文件清单
 
 **新增 Python 文件**（可 review 全文）：
-- `internagents/frame_state.py`（422 行）
+- `internagents/frame_state.py`（≈390 行 —— 已扩展，含 GoalState 全部等效原语，删除桥接）
 - `internagents/frame_service.py`（684 行）
 - `internagents/agent_registry.py`（316 行）
-- `internagents/frame_middleware.py`（67 行）
+- `internagents/frame_middleware.py`（≈270 行 —— 已从 67 行扩展到含 FrameContextMiddleware）
+- `internagents/frame_tools.py`（≈155 行 —— 新增，替代 goal_tools.py）
 
 **编辑的 Python 文件**（只 review diff）：
-- `internagents/agent_graph.py`（+288 / -21，原 1709 → 现 1976）
-- `internagents/goal_tools.py`（+73 / -10，原 111 → 现 174）
+- `internagents/agent_graph.py`（+97 / -97 in C8；累计 +286 / -117）
+- `internagents/agent_registry.py`（1 行 middleware tuple 改名）
+
+**已删除的 Python 文件**：
+- ~~`internagents/goal_state.py`~~（148 行删除，C8）
+- ~~`internagents/goal_middleware.py`~~（161 行删除，C8）
+- ~~`internagents/goal_tools.py`~~（174 行删除，C8）
+- ~~`tests/test_goal_state.py`~~（101 行删除，C8）
 
 **新增数据文件**：
 - `internagents/prompts/agents/main.yaml`（146）
@@ -388,9 +420,7 @@ _每次你批准 / 否决 / 提出修改，在此更新_
 **新增脚本**：
 - `scripts/web.sh`
 
-**未动的核心文件**（保证 backward compat）：
-- `internagents/goal_state.py`（GoalState 定义仍在）
-- `internagents/goal_middleware.py`（仍消费 goal 字段）
+**未动的核心文件**（未涉及）：
 - `internagents/{date,dynamic_local_backend,kb_sync,mcp_config,mcp_tools,remote_compute_tools,ssh_backend,thread_skill}_middleware.py`（未动）
 - 前端 `ui/`（未动）
 - Electron `desktop/`（未动）

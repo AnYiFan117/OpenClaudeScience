@@ -93,9 +93,9 @@ from internagents.dynamic_local_backend import (
     DynamicLocalShellBackendFactory,
 )
 from internagents.date_middleware import RuntimeDateContextMiddleware
-from internagents.goal_middleware import GoalContextMiddleware, goal_system_prompt
-from internagents.goal_state import normalize_goal_state, update_goal_status
-from internagents.goal_tools import goal_tools
+from internagents.frame_middleware import FrameContextMiddleware, FrameEnsureMiddleware, frame_system_prompt
+from internagents.frame_state import ACTIVE_FRAME_STATUSES, normalize_frame_state, update_frame_status
+from internagents.frame_tools import frame_tools
 from internagents.internagent_resources import ResourceConfig, load_resource_config
 from internagents.kb_sync_middleware import KbSyncMiddleware
 from internagents.mcp_tools import load_configured_mcp_tools
@@ -373,11 +373,11 @@ REASONING_OUTPUT_MODEL_ALIASES = {
     "deepseek-v4-pro",
     "deepseek/deepseek-v4-pro",
 }
-GOAL_CONTINUATION_TURNS_KEY = "goalContinuationTurns"
-GOAL_MAX_AUTO_TURNS_ENV = "INTERNAGENT_GOAL_MAX_AUTO_TURNS"
+FRAME_CONTINUATION_TURNS_KEY = "frameContinuationTurns"
+FRAME_MAX_AUTO_TURNS_ENV = "INTERNAGENT_FRAME_MAX_AUTO_TURNS"
 REMOTE_RUNTIME_PENDING_INTERRUPT_KEY = "remoteRuntimePendingInterrupt"
 REMOTE_RUNTIME_INTERNAL_STATE_KEYS = {
-    GOAL_CONTINUATION_TURNS_KEY,
+    FRAME_CONTINUATION_TURNS_KEY,
     REMOTE_RUNTIME_PENDING_INTERRUPT_KEY,
 }
 REMOTE_RUNTIME_PARENT_CONFIG_KEYS = {
@@ -445,19 +445,17 @@ def _create_agent_model() -> str | Any:
 class InternAgentState(TypedDict):
     """LangGraph state for InternAgentS agent execution.
 
-    Combines legacy GoalState fields with new Frame execution model.
-    Frame fields are opt-in; existing code without Frame still works.
+    Uses the Frame execution model as the source of truth for persistent-objective mode.
     """
     messages: Annotated[list[AnyMessage], add_messages]
     todos: NotRequired[list[Any]]
     files: NotRequired[dict[str, str]]
-    goal: NotRequired[dict[str, Any]]
-    goalContinuationTurns: NotRequired[int]
+    frameContinuationTurns: NotRequired[int]
     remoteRuntimePendingInterrupt: NotRequired[dict[str, Any]]
     threadSkills: NotRequired[dict[str, Any]]
     email: NotRequired[dict[str, Any]]
     ui: NotRequired[Any]
-    # Frame execution model fields (Phase 2)
+    # Frame execution model fields
     frame_id: NotRequired[str]
     root_frame_id: NotRequired[str]
     parent_frame_id: NotRequired[str | None]
@@ -465,6 +463,8 @@ class InternAgentState(TypedDict):
     frame_status: NotRequired[str]
     tokens_used: NotRequired[int]
     time_used_seconds: NotRequired[int]
+    input_data: NotRequired[dict[str, Any]]
+    output_data: NotRequired[dict[str, Any]]
     skills_attached: NotRequired[list[str]]
     mcp_servers_attached: NotRequired[list[str]]
     evolution_context: NotRequired[dict[str, Any]]
@@ -605,7 +605,7 @@ def _resolve_skills(config: dict[str, Any]) -> list[str] | None:
 
 
 def _resolve_tools(config: dict[str, Any]) -> list[Any]:
-    tools = list(goal_tools())
+    tools = list(frame_tools())
     tools.extend(remote_compute_tools())
     tools.extend(web_search_tools(config))
     tools.extend(load_configured_mcp_tools(config, root_dir=ROOT_DIR))
@@ -745,7 +745,7 @@ def _thread_skill_subagents(config: dict[str, Any], backend: Any) -> list[dict[s
 
 
 def _agent_tools(agent_config: dict[str, Any]) -> list[Any]:
-    return [*goal_tools(), *web_search_tools(agent_config)]
+    return [*frame_tools(), *web_search_tools(agent_config)]
 
 
 def _agent_system_prompt(base_prompt: str, agent_config: dict[str, Any]) -> str:
@@ -760,7 +760,7 @@ def _agent_system_prompt(base_prompt: str, agent_config: dict[str, Any]) -> str:
         "self-contained, create harvestable files under `out/` when useful, and "
         "explain that the user must approve the remote job card before it runs."
     )
-    return goal_system_prompt(base_prompt)
+    return frame_system_prompt(base_prompt)
 
 
 def _logical_path_prompt() -> str:
@@ -1192,25 +1192,23 @@ def _remote_runtime_exception_message(resource: ResourceConfig, error: Exception
     return f"Remote runtime {resource.id!r} returned an empty error. Check runtime logs."
 
 
-def _goal_blocked_after_remote_runtime_error(
+def _frame_blocked_after_remote_runtime_error(
     state: dict[str, Any],
     message: str,
 ) -> dict[str, Any] | None:
-    if _goal_continuation_turns(state) <= 0:
+    if _frame_continuation_turns(state) <= 0:
         return None
 
-    goal = normalize_goal_state(state.get("goal"))
-    if goal is None or goal.get("status") != "active":
+    if _frame_status(state) not in ACTIVE_FRAME_STATUSES:
         return None
 
-    blocked_goal = update_goal_status(goal, "blocked")
     notice = (
-        "Remote runtime failed during automatic continuation; current goal is paused. "
+        "Remote runtime failed during automatic continuation; current frame is paused. "
         f"Reason: {message}"
     )
     return {
-        "goal": blocked_goal,
-        GOAL_CONTINUATION_TURNS_KEY: 0,
+        "frame_status": "blocked",
+        FRAME_CONTINUATION_TURNS_KEY: 0,
         "messages": [AIMessage(content=notice)],
     }
 
@@ -1251,7 +1249,7 @@ async def _submit_remote_runtime(
         }
     if not isinstance(result, dict):
         raise RuntimeError("Remote runtime did not return a valid LangGraph state.")
-    return _with_goal_continuation_accounting(dict(state), result)
+    return _with_frame_continuation_accounting(dict(state), result)
 
 
 async def _resume_remote_runtime(
@@ -1283,17 +1281,16 @@ async def _resume_remote_runtime(
 
     result = dict(result)
     result[REMOTE_RUNTIME_PENDING_INTERRUPT_KEY] = None
-    return _with_goal_continuation_accounting(dict(state), result)
+    return _with_frame_continuation_accounting(dict(state), result)
 
 
-def _goal_status(state: dict[str, Any]) -> str | None:
-    goal = state.get("goal")
-    status = goal.get("status") if isinstance(goal, dict) else None
+def _frame_status(state: dict[str, Any]) -> str | None:
+    status = state.get("frame_status")
     return status if isinstance(status, str) else None
 
 
-def _goal_continuation_turns(state: dict[str, Any]) -> int:
-    value = state.get(GOAL_CONTINUATION_TURNS_KEY)
+def _frame_continuation_turns(state: dict[str, Any]) -> int:
+    value = state.get(FRAME_CONTINUATION_TURNS_KEY)
     if isinstance(value, int):
         return max(0, value)
     try:
@@ -1302,39 +1299,39 @@ def _goal_continuation_turns(state: dict[str, Any]) -> int:
         return 0
 
 
-def _with_goal_continuation_accounting(
+def _with_frame_continuation_accounting(
     previous_state: dict[str, Any],
     next_state: dict[str, Any],
 ) -> dict[str, Any]:
     updated = dict(next_state)
-    if _goal_status(updated) == "active":
-        updated[GOAL_CONTINUATION_TURNS_KEY] = _goal_continuation_turns(previous_state) + 1
+    if _frame_status(updated) in ACTIVE_FRAME_STATUSES:
+        updated[FRAME_CONTINUATION_TURNS_KEY] = _frame_continuation_turns(previous_state) + 1
     else:
-        updated[GOAL_CONTINUATION_TURNS_KEY] = 0
+        updated[FRAME_CONTINUATION_TURNS_KEY] = 0
     return updated
 
 
-def _should_continue_goal(state: dict[str, Any], *, max_turns: int | None = None) -> bool:
-    if _goal_status(state) != "active":
+def _should_continue_frame(state: dict[str, Any], *, max_turns: int | None = None) -> bool:
+    if _frame_status(state) not in ACTIVE_FRAME_STATUSES:
         return False
     max_auto_turns = (
-        _env_positive_int(GOAL_MAX_AUTO_TURNS_ENV, 50)
+        _env_positive_int(FRAME_MAX_AUTO_TURNS_ENV, 50)
         if max_turns is None
         else max_turns
     )
-    return _goal_continuation_turns(state) < max_auto_turns
+    return _frame_continuation_turns(state) < max_auto_turns
 
 
 def _route_after_remote_runtime(state: dict[str, Any]) -> str:
     if state.get(REMOTE_RUNTIME_PENDING_INTERRUPT_KEY):
         return "remote_runtime_resume"
-    return "remote_runtime" if _should_continue_goal(state) else END
+    return "remote_runtime" if _should_continue_frame(state) else END
 
 
 def _route_after_remote_runtime_resume(state: dict[str, Any]) -> str:
     if state.get(REMOTE_RUNTIME_PENDING_INTERRUPT_KEY):
         return "remote_runtime_resume"
-    return "remote_runtime" if _should_continue_goal(state) else END
+    return "remote_runtime" if _should_continue_frame(state) else END
 
 
 class ImageContentCompatibilityMiddleware(AgentMiddleware):
@@ -1515,7 +1512,7 @@ def _filter_middlewares_for_agent(
     """Build middleware list for an agent based on its configuration.
 
     Creates middleware instances for each middleware name in agent_cfg.middlewares.
-    Currently supported: "date", "goal", "skill", "kb_sync"
+    Currently supported: "date", "frame", "skill", "kb_sync"
 
     Args:
         agent_config_dict: The full deepagent.config.json config
@@ -1526,8 +1523,6 @@ def _filter_middlewares_for_agent(
     Returns:
         List of middleware instances to use for this agent
     """
-    from internagents.frame_middleware import FrameEnsureMiddleware
-
     middleware = []
 
     # Always add frame middleware first to ensure state consistency
@@ -1536,8 +1531,8 @@ def _filter_middlewares_for_agent(
     for name in (agent_cfg.middlewares or []):
         if name == "date":
             middleware.append(RuntimeDateContextMiddleware())
-        elif name == "goal":
-            middleware.append(GoalContextMiddleware())
+        elif name == "frame":
+            middleware.append(FrameContextMiddleware())
         elif name == "skill":
             middleware.append(_thread_skill_middleware(agent_config_dict, backend))
         elif name == "kb_sync" and resource is not None:
@@ -1692,12 +1687,12 @@ def create_agent_for_resource(resource: ResourceConfig):  # noqa: ANN201
                 return await _submit_remote_runtime(remote, resource, state, config)
             except RuntimeError as exc:
                 message = str(exc).strip() or "Remote runtime returned an empty error."
-                goal_update = _goal_blocked_after_remote_runtime_error(
+                frame_update = _frame_blocked_after_remote_runtime_error(
                     dict(state),
                     message,
                 )
-                if goal_update is not None:
-                    return goal_update
+                if frame_update is not None:
+                    return frame_update
                 raise
 
         async def resume_remote_runtime(
@@ -1708,12 +1703,12 @@ def create_agent_for_resource(resource: ResourceConfig):  # noqa: ANN201
                 return await _resume_remote_runtime(remote, resource, state, config)
             except RuntimeError as exc:
                 message = str(exc).strip() or "Remote runtime returned an empty error."
-                goal_update = _goal_blocked_after_remote_runtime_error(
+                frame_update = _frame_blocked_after_remote_runtime_error(
                     dict(state),
                     message,
                 )
-                if goal_update is not None:
-                    return goal_update
+                if frame_update is not None:
+                    return frame_update
                 raise
 
         graph = StateGraph(InternAgentState)
@@ -1766,7 +1761,7 @@ def create_agent_for_resource(resource: ResourceConfig):  # noqa: ANN201
     middleware.append(ImageContentCompatibilityMiddleware())
     middleware.append(WebSearchBudgetMiddleware())
     middleware.append(RuntimeDateContextMiddleware())
-    middleware.append(GoalContextMiddleware())
+    middleware.append(FrameContextMiddleware())
     middleware.append(_thread_skill_middleware(agent_config, backend))
     return create_deep_agent(
         model=_create_agent_model(),

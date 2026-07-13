@@ -6,20 +6,24 @@ Each test validates one piece of the Frame contract.
 
 import sys
 from internagents.frame_state import (
+    ACTIVE_FRAME_STATUSES,
+    TERMINAL_FRAME_STATUSES,
+    MAX_FRAME_OBJECTIVE_CHARS,
     create_root_frame,
     create_child_frame,
     FrameValidationError,
-    normalize_frame_state,
-    goal_from_frame,
-    frame_from_goal,
-    update_frame_status,
+    frame_response,
     frame_with_elapsed,
+    normalize_frame_state,
+    update_frame_status,
+    validate_frame_objective,
+    validate_token_budget,
+    validate_frame_status,
 )
 
 
 def test_blocked_status_valid():
     """validate_frame_status must accept 'blocked' as a valid terminal status."""
-    from internagents.frame_state import validate_frame_status
     assert validate_frame_status("blocked") == "blocked"
     print("✅ test_blocked_status_valid")
 
@@ -89,29 +93,62 @@ def test_normalize_frame_state_invalid():
     print("✅ test_normalize_frame_state_invalid")
 
 
-def test_goal_bridge_frame_to_goal():
-    """goal_from_frame must convert Frame to compatible Goal."""
-    f = create_root_frame(
-        agent_name="main", input_data={"objective": "solve problem"}
-    )
-    goal = goal_from_frame(f)
-    assert goal is not None, "goal must not be None"
-    assert goal["id"] == f["id"], "id must match"
-    assert "solve problem" in goal["objective"], "objective must include input_data"
-    assert goal.get("threadId") == f["root_frame_id"], "threadId should be root_frame_id"
-    print("✅ test_goal_bridge_frame_to_goal")
+def test_validate_frame_objective():
+    """validate_frame_objective must trim and reject empty/oversize."""
+    assert validate_frame_objective("  hello  ") == "hello"
+    try:
+        validate_frame_objective("")
+        assert False, "should reject empty"
+    except FrameValidationError:
+        pass
+    try:
+        validate_frame_objective("x" * (MAX_FRAME_OBJECTIVE_CHARS + 1))
+        assert False, "should reject oversize"
+    except FrameValidationError:
+        pass
+    print("✅ test_validate_frame_objective")
 
 
-def test_goal_bridge_goal_to_frame():
-    """frame_from_goal must convert Goal to Frame."""
-    from internagents.goal_state import create_goal_state
+def test_validate_token_budget():
+    """validate_token_budget must accept positive int, reject others."""
+    assert validate_token_budget(None) is None
+    assert validate_token_budget(1000) == 1000
+    for bad in [0, -1, "1000", 1.5]:
+        try:
+            validate_token_budget(bad)  # type: ignore
+            assert False, f"should reject {bad!r}"
+        except FrameValidationError:
+            pass
+    print("✅ test_validate_token_budget")
 
-    goal = create_goal_state("find answer", token_budget=5000)
-    frame = frame_from_goal(goal)
-    assert frame is not None, "frame must not be None"
-    assert frame["id"] == goal["id"], "id must match"
-    assert "find answer" in str(frame.get("input_data", {})), "objective should be in input_data"
-    print("✅ test_goal_bridge_goal_to_frame")
+
+def test_root_frame_with_token_budget():
+    """create_root_frame must accept token_budget and store in evolution_context."""
+    f = create_root_frame(agent_name="main", input_data={"objective": "x"}, token_budget=5000)
+    assert f.get("evolution_context", {}).get("token_budget") == 5000
+    print("✅ test_root_frame_with_token_budget")
+
+
+def test_frame_response_shape():
+    """frame_response must expose frame + remainingTokens (None when no budget)."""
+    f = create_root_frame(agent_name="main")
+    resp = frame_response(f)
+    assert "frame" in resp and "remainingTokens" in resp
+    assert resp["remainingTokens"] is None, "no budget → remainingTokens None"
+
+    f2 = create_root_frame(agent_name="main", token_budget=1000)
+    resp2 = frame_response(f2)
+    assert resp2["remainingTokens"] == 1000, "no tokens used → full budget remains"
+    print("✅ test_frame_response_shape")
+
+
+def test_status_sets_disjoint():
+    """ACTIVE and TERMINAL frame status sets must be disjoint."""
+    assert ACTIVE_FRAME_STATUSES & TERMINAL_FRAME_STATUSES == set(), \
+        "active and terminal status sets must not overlap"
+    assert "running" in ACTIVE_FRAME_STATUSES
+    assert "blocked" in TERMINAL_FRAME_STATUSES
+    print("✅ test_status_sets_disjoint")
 
 
 def test_update_frame_status():
@@ -178,8 +215,11 @@ def run_all_tests():
         test_invalid_agent_name,
         test_normalize_frame_state_valid,
         test_normalize_frame_state_invalid,
-        test_goal_bridge_frame_to_goal,
-        test_goal_bridge_goal_to_frame,
+        test_validate_frame_objective,
+        test_validate_token_budget,
+        test_root_frame_with_token_budget,
+        test_frame_response_shape,
+        test_status_sets_disjoint,
         test_update_frame_status,
         test_frame_with_elapsed,
         test_frame_with_elapsed_terminal,

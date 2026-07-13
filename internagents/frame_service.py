@@ -226,3 +226,91 @@ def get_frame_info(frame: FrameState) -> dict[str, Any]:
         "message_count": len(frame.get("messages", [])),
         "created_at": frame["created_at"],
     }
+
+
+async def spawn_reviewer(
+    parent: FrameState,
+    *,
+    graph: Any,
+    review_target: dict[str, Any] | None = None,
+    checkpointer: Any = None,
+) -> FrameState:
+    """Spawn a reviewer child frame targeting the parent's output.
+
+    Convenience wrapper around spawn_child_frame that pre-configures
+    the reviewer agent with the parent's output as the review target.
+
+    Args:
+        parent: the parent FrameState (usually main agent)
+        graph: LangGraph compiled reviewer agent graph
+        review_target: optional review target data (defaults to parent's output)
+        checkpointer: LangGraph checkpointer (optional)
+
+    Returns:
+        Terminal FrameState of the reviewer after completion
+
+    Example:
+        ```python
+        main_frame = await create_and_run_root_frame(...)
+        review_frame = await spawn_reviewer(
+            parent=main_frame,
+            graph=reviewer_graph,
+        )
+        assert review_frame["parent_frame_id"] == main_frame["id"]
+        ```
+    """
+    from internagents.agent_registry import get_agent_config
+
+    _ = get_agent_config("reviewer")  # Sanity check that reviewer is registered
+
+    input_data = {
+        "review_target": review_target or parent.get("output_data") or {},
+    }
+
+    return await spawn_child_frame(
+        parent,
+        graph=graph,
+        agent_name="reviewer",
+        input_data=input_data,
+        checkpointer=checkpointer,
+    )
+
+
+async def spawn_onboarding(
+    *,
+    graph: Any,
+    user_id: str | None = None,
+    checkpointer: Any = None,
+) -> FrameState:
+    """Run a one-shot onboarding frame for a new user.
+
+    Creates a root frame (not a child) with the onboarding agent,
+    runs it to completion.
+
+    Args:
+        graph: LangGraph compiled onboarding agent graph
+        user_id: optional user identifier for context
+        checkpointer: LangGraph checkpointer (optional)
+
+    Returns:
+        Terminal FrameState of the onboarding session
+
+    Example:
+        ```python
+        onboarding_frame = await spawn_onboarding(
+            graph=onboarding_graph,
+            user_id="user@example.com",
+        )
+        assert onboarding_frame["agent_name"] == "onboarding"
+        ```
+    """
+    from internagents.agent_registry import get_agent_config
+
+    _ = get_agent_config("onboarding")  # Sanity check
+
+    return await create_and_run_root_frame(
+        graph=graph,
+        input_data={"user_id": user_id or "default"},
+        agent_name="onboarding",
+        checkpointer=checkpointer,
+    )

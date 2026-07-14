@@ -9,11 +9,22 @@ set -uo pipefail
 
 PORTS=(2024 22024 3000)
 
+# Extract listener PIDs for a given port from `ss -tlnp` output.
+# Uses grep+cut instead of awk regex so `:PORT ` boundaries are literal.
+pids_on_port() {
+  local port="$1"
+  ss -tlnp 2>/dev/null \
+    | grep -E "[:.]${port} " \
+    | grep -oE 'pid=[0-9]+' \
+    | cut -d= -f2 \
+    | sort -u
+}
+
 echo "[kill-all] scanning ports ${PORTS[*]}"
 
 killed_any=0
 for port in "${PORTS[@]}"; do
-  pids="$(ss -tlnp 2>/dev/null | awk -v p=":${port}\\b" '$4 ~ p { for(i=1;i<=NF;i++) if ($i ~ /pid=/) { gsub(/[^0-9,]/, "", $i); split($i, a, ","); for (j in a) if (a[j] != "") print a[j] } }' | sort -u)"
+  pids="$(pids_on_port "$port")"
   if [ -z "$pids" ]; then
     echo "[kill-all] port $port: nothing listening"
     continue
@@ -45,7 +56,7 @@ if [ "$killed_any" = "1" ]; then
 
   # SIGKILL anything still holding a port
   for port in "${PORTS[@]}"; do
-    pids="$(ss -tlnp 2>/dev/null | awk -v p=":${port}\\b" '$4 ~ p { for(i=1;i<=NF;i++) if ($i ~ /pid=/) { gsub(/[^0-9,]/, "", $i); split($i, a, ","); for (j in a) if (a[j] != "") print a[j] } }' | sort -u)"
+    pids="$(pids_on_port "$port")"
     for pid in $pids; do
       if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
         echo "[kill-all] SIGKILL survivor pid=$pid on port $port"
@@ -61,4 +72,4 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 rm -f "$ROOT_DIR/.internagents/pids/"*.pid 2>/dev/null || true
 
 echo "[kill-all] ✅ done. Verify:"
-ss -tlnp 2>/dev/null | grep -E ':(2024|22024|3000)\b' || echo "  (all three ports free)"
+ss -tlnp 2>/dev/null | grep -E ':(2024|22024|3000) ' || echo "  (all three ports free)"

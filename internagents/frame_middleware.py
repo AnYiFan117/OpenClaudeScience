@@ -15,7 +15,7 @@ from typing import Any, Awaitable, Callable, NotRequired, TypedDict
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import AIMessage, SystemMessage, HumanMessage
 from langgraph.types import Interrupt
 
 from internagents.frame_state import (
@@ -222,6 +222,29 @@ class FrameContextMiddleware(AgentMiddleware):
     @property
     def name(self) -> str:
         return "FrameContextMiddleware"
+
+    def after_model(self, state, runtime) -> dict[str, Any] | None:
+        """Accumulate the last AI message's token usage into state.tokens_used."""
+        messages = state.get("messages") or []
+        last_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
+        if last_ai is None:
+            return None
+        usage = getattr(last_ai, "usage_metadata", None)
+        if not usage:
+            return None
+        delta = usage.get("total_tokens")
+        if not isinstance(delta, int) or delta <= 0:
+            return None
+        current = state.get("tokens_used") or 0
+        new_total = current + delta
+        _dbg(
+            f"Ctx  · TOKENS +{delta} (input={usage.get('input_tokens', 0)} "
+            f"output={usage.get('output_tokens', 0)}) → total {new_total}"
+        )
+        return {"tokens_used": new_total}
+
+    async def aafter_model(self, state, runtime) -> dict[str, Any] | None:
+        return self.after_model(state, runtime)
 
     def wrap_model_call(
         self,

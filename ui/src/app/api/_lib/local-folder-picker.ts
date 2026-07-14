@@ -34,9 +34,9 @@ async function chooseFolderOnMac(prompt: string): Promise<string> {
 
 async function chooseFolderOnLinux(title: string): Promise<string> {
   const { stdout: pickerPath } = await execFileAsync(
-    "sh",
+    "bash",
     [
-      "-lc",
+      "-c",
       "command -v zenity || command -v kdialog || command -v yad || true",
     ],
     { timeout: 5_000 }

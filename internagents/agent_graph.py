@@ -1524,7 +1524,12 @@ def _filter_middlewares_for_agent(
         List of middleware instances to use for this agent
     """
     middleware = []
-    middleware.append(FrameRootMiddleware())
+    # FrameRootMiddleware only for root-frame agents (main/onboarding).
+    # reviewer/bookmarker are spawned as child frames via spawn_child_frame,
+    # which already creates the FrameState — they don't need auto-root-creation
+    # and their initial state.messages is empty (no HumanMessage to extract).
+    if agent_cfg.name in ("main", "onboarding"):
+        middleware.append(FrameRootMiddleware())
 
     for name in (agent_cfg.middlewares or []):
         if name == "date":
@@ -1973,3 +1978,18 @@ else:
     agent_remote8 = _resource_agents.get("remote8") or create_missing_resource_agent(
         "remote8"
     )
+
+    # Pre-warm reviewer/bookmarker/onboarding graphs at coordinator startup.
+    # Deferred (lazy) construction hits `os.mkdir` inside `_resolve_skills` on
+    # first access, which LangGraph's blockbuster blocks inside async request
+    # handlers. Warm at startup so `spawn_reviewer` / `spawn_bookmarker_*` are
+    # cache hits with no sync I/O in the request path.
+    if _default_resource_id == "local":
+        for _aname in ("reviewer", "bookmarker", "onboarding"):
+            try:
+                get_agent_graph("local", _aname)
+            except Exception as _e:  # noqa: BLE001
+                print(
+                    f"[verifier] pre-warm {_aname} graph failed: {_e}",
+                    flush=True,
+                )

@@ -117,9 +117,21 @@ export async function DELETE(request: NextRequest) {
   }
 }
 
-export async function POST() {
+export async function POST(request: NextRequest) {
   try {
-    const selectedPath = await chooseLocalFolder("选择本机项目文件夹");
+    // Allow manual path entry (e.g. headless Linux with no folder picker GUI).
+    // If body provides workspacePath, use it directly; else fall back to
+    // native folder picker.
+    let manualPath = "";
+    try {
+      const body = (await request.json()) as { workspacePath?: unknown };
+      manualPath =
+        typeof body.workspacePath === "string" ? body.workspacePath.trim() : "";
+    } catch {
+      // No body — POST without payload triggers picker (original behavior)
+    }
+
+    const selectedPath = manualPath || (await chooseLocalFolder("选择本机项目文件夹"));
     if (!selectedPath) {
       return NextResponse.json({ cancelled: true });
     }

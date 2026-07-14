@@ -144,8 +144,34 @@ function ProjectsPageContent() {
   const pickWorkspace = useCallback(async () => {
     setPicking(true);
     try {
-      const response = await fetch("/api/workspaces", { method: "POST" });
-      const payload = (await response.json()) as WorkspacesPayload;
+      let response = await fetch("/api/workspaces", { method: "POST" });
+      let payload = (await response.json()) as WorkspacesPayload;
+
+      // Fallback for headless Linux (or any system without a GUI folder
+      // picker): let the user paste a path manually.
+      if (
+        !response.ok &&
+        typeof payload.error === "string" &&
+        (payload.error.includes("zenity") ||
+          payload.error.includes("kdialog") ||
+          payload.error.includes("暂不支持") ||
+          payload.error.includes("文件夹选择器"))
+      ) {
+        const manualPath = window.prompt(
+          "系统没有可用的文件夹选择器。请手动输入项目目录的绝对路径（不存在会自动创建）：",
+          ""
+        );
+        if (!manualPath || !manualPath.trim()) {
+          return;
+        }
+        response = await fetch("/api/workspaces", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspacePath: manualPath.trim() }),
+        });
+        payload = (await response.json()) as WorkspacesPayload;
+      }
+
       if (!response.ok) {
         throw new Error(payload.error || t("projectPickFailed"));
       }

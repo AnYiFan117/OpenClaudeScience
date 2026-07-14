@@ -2647,6 +2647,12 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(
             break;
           }
         } else if (message.type === "human") {
+          // Skip harness-injected notices (e.g. reviewer/auditor findings).
+          // These carry LLM-visible feedback but should not appear as user
+          // messages in the transcript — they belong to a separate UI surface.
+          if ((message as any).additional_kwargs?._harness_notice) {
+            return;
+          }
           messageMap.set(message.id!, {
             message,
             toolCalls: [],
@@ -2830,6 +2836,11 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(
       for (let index = messages.length - 1; index >= 0; index -= 1) {
         const message = messages[index];
         if (message.type === "human") {
+          // Skip harness-injected notices — they aren't real user input,
+          // don't offer them as "recovered input" to paste back.
+          if ((message as any).additional_kwargs?._harness_notice) {
+            continue;
+          }
           return message;
         }
       }

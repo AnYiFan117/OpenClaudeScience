@@ -370,38 +370,59 @@ class VerifierDispatchMiddleware(AgentMiddleware):
         state: dict[str, Any],
         findings: dict[str, Any],
     ) -> dict[str, Any]:
-        """Inject findings as HumanMessage with [Auditor] prefix and return state updates.
+        """Inject findings as HumanMessage with a human-readable label.
 
-        The findings are formatted as a user-role message so the main LLM treats it
-        as a real interlocutor input (matching Claude Science behavior). The message
-        includes metadata flag _harness_notice=true for special UI rendering.
+        - verdict=pass: skip injection entirely (only JSONL is written). Adding
+          an "audit passed" line to the chat every checkpoint is pure noise.
+        - verdict=warn/fail/unknown: inject a Chinese-labeled auditor message
+          the user can actually read.
         """
         verdict = findings.get("verdict", "unknown")
-        issues = findings.get("issues", [])
-        suggestions = findings.get("suggestions", [])
-        bounce_count = _VERIFICATION_BOUNCES.get(state.get("root_frame_id", ""), 0)
+        issues = findings.get("issues") or []
+        suggestions = findings.get("suggestions") or []
+        root_frame_id = state.get("root_frame_id") or ""
+        bounce_count = _VERIFICATION_BOUNCES.get(root_frame_id, 0)
 
-        issues_str = "\n".join(f"- {issue}" for issue in (issues or []))
-        suggestions_str = "\n".join(f"- {suggestion}" for suggestion in (suggestions or []))
+        # verdict=pass → don't pollute the chat with a "passed" line
+        if verdict == "pass":
+            _dbg(f"INJECT skipped (verdict=pass) bounce_count={bounce_count}")
+            return {}
 
-        # Format: [Auditor] verdict=... bounce_count=... on first line, then structured output
-        auditor_text = f"[Auditor] verdict={verdict} bounce_count={bounce_count}"
-        if issues_str:
-            auditor_text += f"\n\nIssues:\n{issues_str}"
-        if suggestions_str:
-            auditor_text += f"\n\nSuggestions:\n{suggestions_str}"
+        label = {
+            "fail": "⚠️ 审计发现严重问题",
+            "warn": "🔍 审计发现值得注意的问题",
+        }.get(verdict, "🔍 审计反馈")
 
-        # Inject as HumanMessage with harness metadata
-        auditor_msg = HumanMessage(
-            content=auditor_text,
-            additional_kwargs={"_harness_notice": True},
+        issues_block = (
+            "\n".join(f"- {i}" for i in issues) if issues else "（未列出具体条目）"
+        )
+        suggestions_block = (
+            "\n".join(f"- {s}" for s in suggestions)
+            if suggestions
+            else "（未列出具体建议）"
         )
 
-        _dbg(f"INJECT HumanMessage verdict={verdict} issues_count={len(issues or [])} bounce_count={bounce_count}")
+        feedback_text = (
+            f"{label}\n\n"
+            f"**问题**：\n{issues_block}\n\n"
+            f"**建议**：\n{suggestions_block}"
+        )
 
-        return {
-            "messages": [auditor_msg],
-        }
+        auditor_msg = HumanMessage(
+            content=feedback_text,
+            additional_kwargs={
+                "_harness_notice": True,
+                "_verdict": verdict,
+                "_bounce_count": bounce_count,
+            },
+        )
+
+        _dbg(
+            f"INJECT HumanMessage verdict={verdict} "
+            f"issues_count={len(issues)} bounce_count={bounce_count}"
+        )
+
+        return {"messages": [auditor_msg]}
 
     def _write_verdict_jsonl(
         self,

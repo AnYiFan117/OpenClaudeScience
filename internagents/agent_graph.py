@@ -1536,6 +1536,11 @@ def _filter_middlewares_for_agent(
         elif name == "kb_sync" and resource is not None:
             middleware.append(KbSyncMiddleware(resource=resource, backend=backend))
 
+    # Add verifier dispatch middleware only for main agent
+    if agent_cfg.name == "main":
+        from internagents.verifier_dispatch_middleware import VerifierDispatchMiddleware
+        middleware.append(VerifierDispatchMiddleware(agent_config_dict))
+
     # Always add compatibility and budget middlewares for all agents
     middleware.append(ImageContentCompatibilityMiddleware())
     middleware.append(WebSearchBudgetMiddleware())

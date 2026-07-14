@@ -184,8 +184,9 @@ class FrameRootMiddleware(AgentMiddleware):
                 )
             return None
         objective = _extract_objective_from_messages(state.get("messages", []))
+        agent_name = state.get("agent_name") or "main"
         frame = create_root_frame(
-            agent_name="main",
+            agent_name=agent_name,
             input_data={"objective": objective},
         )
         frame = update_frame_status(frame, "running")
@@ -197,7 +198,7 @@ class FrameRootMiddleware(AgentMiddleware):
             "frame_id": frame["id"],
             "root_frame_id": frame["root_frame_id"],
             "parent_frame_id": None,
-            "agent_name": "main",
+            "agent_name": agent_name,
             "frame_status": "running",
             "tokens_used": 0,
             "time_used_seconds": 0,

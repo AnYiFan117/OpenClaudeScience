@@ -31,7 +31,6 @@ from langchain_core.messages import AIMessage, SystemMessage
 
 from internagents.frame_state import (
     TERMINAL_FRAME_STATUSES,
-    _frame_from_state,
 )
 
 _logger = logging.getLogger(__name__)
@@ -43,6 +42,22 @@ def _dbg(msg: str) -> None:
     """Print a Verifier debug line when INTERNAGENT_FRAME_DEBUG=1."""
     if _FRAME_DEBUG:
         print(f"🔍 [Verifier] {msg}", flush=True)
+
+
+def _frame_from_state(state: dict[str, Any]) -> dict[str, Any] | None:
+    """Reconstruct a FrameState from top-level state fields."""
+    if not isinstance(state, dict):
+        return None
+    frame_id = state.get("frame_id")
+    if not isinstance(frame_id, str) or not frame_id:
+        return None
+    return {
+        "id": frame_id,
+        "root_frame_id": state.get("root_frame_id") or frame_id,
+        "parent_frame_id": state.get("parent_frame_id"),
+        "agent_name": state.get("agent_name", "main"),
+        "status": state.get("frame_status", "running"),
+    }
 
 
 # Module-level state keyed by root_frame_id

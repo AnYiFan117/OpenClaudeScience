@@ -305,8 +305,12 @@ install_dependencies() {
     cp "$ROOT_DIR/.env.example" "$ROOT_DIR/.env"
   fi
 
-  log "Installing Python package in editable mode..."
-  "$PYTHON_BIN" -m pip install -e .
+  if "$PYTHON_BIN" -c "import internagents.agent_graph" >/dev/null 2>&1; then
+    log "Python package already installed; skipping 'pip install -e .'."
+  else
+    log "Installing Python package in editable mode..."
+    "$PYTHON_BIN" -m pip install -e .
+  fi
 
   if [ ! -d "$ROOT_DIR/ui/node_modules" ]; then
     require_command npm

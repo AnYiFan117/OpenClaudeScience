@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import time
@@ -681,4 +682,149 @@ async def create_and_run_root_frame_with_bookmarker(
             bookmarker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await bookmarker_task
+
+
+def _workspace_id_from_resource(resource_id: str = "local") -> str:
+    """Compute stable workspace ID from resource path.
+
+    Reads internagent.resources.json to find the resource's workspace path,
+    then produces a stable 16-char ID using SHA256 (matching UI's workspaceIdForPath).
+
+    Args:
+        resource_id: Resource identifier (default "local")
+
+    Returns:
+        16-char hex string workspace ID, or "resource:{resource_id}" if no workspace found
+    """
+    try:
+        resources_file = Path.cwd() / "internagent.resources.json"
+        if not resources_file.exists():
+            return f"resource:{resource_id}"
+
+        with resources_file.open(encoding="utf-8") as f:
+            resources_config = json.load(f)
+
+        resources = resources_config.get("resources", [])
+        for res in resources:
+            if res.get("id") == resource_id:
+                workspace_path = res.get("workspace")
+                if workspace_path:
+                    # Resolve to absolute path
+                    workspace_abs = Path(workspace_path).expanduser().resolve()
+                    workspace_str = str(workspace_abs)
+
+                    # SHA256 hash, first 16 chars (matching UI behavior)
+                    hash_hex = hashlib.sha256(workspace_str.encode()).hexdigest()
+                    return hash_hex[:16]
+
+        return f"resource:{resource_id}"
+
+    except Exception as e:
+        _logger.debug(f"workspace_id_from_resource failed: {e}")
+        return f"resource:{resource_id}"
+
+
+def _load_agent_config() -> dict[str, Any]:
+    """Load deepagent.config.json.
+
+    Returns empty dict if file doesn't exist or fails to parse.
+    """
+    try:
+        from internagents.agent_graph import _agent_config_path
+
+        config_file = _agent_config_path()
+        if not config_file.exists():
+            return {}
+        with config_file.open(encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        _logger.debug(f"_load_agent_config failed: {e}")
+        return {}
+
+
+def _save_agent_config(config: dict[str, Any]) -> None:
+    """Save deepagent.config.json.
+
+    Args:
+        config: Full config dict to write back
+
+    Returns: nothing on success; logs warning on failure
+    """
+    try:
+        from internagents.agent_graph import _agent_config_path
+
+        config_file = _agent_config_path()
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        with config_file.open("w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        _logger.warning(f"_save_agent_config failed: {e}")
+
+
+async def entry_root_frame(
+    *,
+    input_data: dict[str, Any],
+    resource_id: str = "local",
+    checkpointer: Any = None,
+    graph: Any = None,
+) -> FrameState:
+    """Entry gate for root frame — routes to onboarding or main based on workspace status.
+
+    If the resource's workspace has not completed onboarding, routes to "onboarding" agent.
+    Once onboarding completes, marks the workspace in config and subsequent calls route to "main".
+
+    Args:
+        input_data: User input that initiates the frame
+        resource_id: Resource identifier (default "local")
+        checkpointer: LangGraph checkpointer (optional)
+        graph: optional LangGraph compiled agent graph (optional)
+
+    Returns:
+        Terminal FrameState of the root frame (onboarding or main)
+
+    Example:
+        ```python
+        # First call in a new workspace → routes to onboarding
+        frame = await entry_root_frame(input_data={"query": "..."})
+
+        # After onboarding completes, subsequent calls route to main
+        frame = await entry_root_frame(input_data={"query": "..."})
+        ```
+    """
+    # Compute workspace ID
+    workspace_id = _workspace_id_from_resource(resource_id)
+
+    # Load config
+    config = _load_agent_config()
+
+    # Check if this workspace has completed onboarding
+    onboarding_completed = config.get("onboarding_completed_workspaces", {})
+    if onboarding_completed.get(workspace_id, False):
+        # Already onboarded → route to main
+        return await create_and_run_root_frame(
+            input_data=input_data,
+            agent_name="main",
+            checkpointer=checkpointer,
+            graph=graph,
+        )
+
+    # Not yet onboarded → route to onboarding
+    onboarding_frame = await create_and_run_root_frame(
+        input_data=input_data,
+        agent_name="onboarding",
+        checkpointer=checkpointer,
+        graph=graph,
+    )
+
+    # If onboarding completed, mark workspace and save config
+    if onboarding_frame.get("status") == "completed":
+        if "onboarding_completed_workspaces" not in config:
+            config["onboarding_completed_workspaces"] = {}
+        config["onboarding_completed_workspaces"][workspace_id] = True
+        _save_agent_config(config)
+        _logger.info(
+            f"marked workspace {workspace_id[:8]} as onboarded"
+        )
+
+    return onboarding_frame
 

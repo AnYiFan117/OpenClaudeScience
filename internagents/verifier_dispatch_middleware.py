@@ -21,13 +21,14 @@ import json
 import logging
 import os
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from internagents.frame_state import (
     TERMINAL_FRAME_STATUSES,
@@ -134,14 +135,39 @@ def _format_review_prompt(messages: list, objective: str) -> str:
         lines.append(f"[{i + 1}] [{role}] {content}")
     lines.append("")
     lines.append(
-        'Report findings as a single JSON object on its own line with keys: '
-        'verdict ("pass" | "fail" | "warn"), '
-        'issues (list of strings), suggestions (list of strings).'
+        "**IMPORTANT — this is a MID-TURN checkpoint.** The main agent is "
+        "still working. Do NOT report progress-related observations as "
+        "issues or suggestions. Specifically, DO NOT say things like:"
+    )
+    lines.append("  - 'the assistant has not yet produced any response'")
+    lines.append("  - 'the task is incomplete, please continue'")
+    lines.append("  - 'no substantive output has been produced yet'")
+    lines.append(
+        "These are expected mid-turn states, not defects. The main agent "
+        "will continue after this checkpoint."
+    )
+    lines.append("")
+    lines.append(
+        "Only report a finding when you can trace a CONCRETE defect in the "
+        "transcript above:"
     )
     lines.append(
-        "Trace claims to the transcript above — a value that appears "
-        "fabricated or a plan deviation is a valid issue. A value you "
-        "cannot trace inside this window is NOT a finding."
+        "  - a fabricated citation, URL, quote, or number (a value that "
+        "appears in an assistant message but has no source in the transcript)"
+    )
+    lines.append(
+        "  - a claim that contradicts an earlier tool result or user input"
+    )
+    lines.append(
+        "  - a plan deviation (agent doing something the user did not ask for)"
+    )
+    lines.append("")
+    lines.append(
+        'Report findings as a single JSON object on its own line with keys: '
+        'verdict ("pass" | "fail" | "warn"), '
+        'issues (list of strings), suggestions (list of strings). '
+        'If nothing concrete is wrong, return verdict="pass" and empty '
+        'issues/suggestions arrays.'
     )
     return "\n".join(lines)
 
@@ -370,12 +396,19 @@ class VerifierDispatchMiddleware(AgentMiddleware):
         state: dict[str, Any],
         findings: dict[str, Any],
     ) -> dict[str, Any]:
-        """Inject findings as HumanMessage with a human-readable label.
+        """Inject reviewer findings as a fake tool-call pair for UI visibility.
 
-        - verdict=pass: skip injection entirely (only JSONL is written). Adding
-          an "audit passed" line to the chat every checkpoint is pure noise.
-        - verdict=warn/fail/unknown: inject a Chinese-labeled auditor message
-          the user can actually read.
+        We insert (AIMessage with tool_calls, ToolMessage with result) — the
+        same shape a real tool invocation produces — so the frontend renders
+        review activity as a tool card ("🔍 review …") in the transcript.
+
+        Both messages carry `additional_kwargs._harness_notice=true` so any
+        UI/LLM filter can distinguish harness-injected activity from genuine
+        tool use.
+
+        `verdict=pass` is also injected so the user can see that review ran
+        (this is what the user asked for — visibility every checkpoint, not
+        just on issues).
         """
         verdict = findings.get("verdict", "unknown")
         issues = findings.get("issues") or []
@@ -383,46 +416,45 @@ class VerifierDispatchMiddleware(AgentMiddleware):
         root_frame_id = state.get("root_frame_id") or ""
         bounce_count = _VERIFICATION_BOUNCES.get(root_frame_id, 0)
 
-        # verdict=pass → don't pollute the chat with a "passed" line
-        if verdict == "pass":
-            _dbg(f"INJECT skipped (verdict=pass) bounce_count={bounce_count}")
-            return {}
+        tool_call_id = f"review_{uuid.uuid4().hex[:8]}"
 
-        label = {
-            "fail": "⚠️ 审计发现严重问题",
-            "warn": "🔍 审计发现值得注意的问题",
-        }.get(verdict, "🔍 审计反馈")
-
-        issues_block = (
-            "\n".join(f"- {i}" for i in issues) if issues else "（未列出具体条目）"
-        )
-        suggestions_block = (
-            "\n".join(f"- {s}" for s in suggestions)
-            if suggestions
-            else "（未列出具体建议）"
-        )
-
-        feedback_text = (
-            f"{label}\n\n"
-            f"**问题**：\n{issues_block}\n\n"
-            f"**建议**：\n{suggestions_block}"
+        # AIMessage announcing the review "tool call"
+        review_ai = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": tool_call_id,
+                    "name": "review",
+                    "args": {
+                        "trigger": "checkpoint",
+                        "at_message_index": len(state.get("messages", [])),
+                    },
+                }
+            ],
+            additional_kwargs={"_harness_notice": True},
         )
 
-        auditor_msg = HumanMessage(
-            content=feedback_text,
-            additional_kwargs={
-                "_harness_notice": True,
-                "_verdict": verdict,
-                "_bounce_count": bounce_count,
-            },
+        # ToolMessage returning the findings, formatted as pretty JSON so
+        # the UI's tool-result renderer shows something readable.
+        tool_result_payload = {
+            "verdict": verdict,
+            "issues": issues,
+            "suggestions": suggestions,
+            "bounce_count": bounce_count,
+        }
+        review_result = ToolMessage(
+            tool_call_id=tool_call_id,
+            content=json.dumps(tool_result_payload, ensure_ascii=False, indent=2),
+            additional_kwargs={"_harness_notice": True},
         )
 
         _dbg(
-            f"INJECT HumanMessage verdict={verdict} "
-            f"issues_count={len(issues)} bounce_count={bounce_count}"
+            f"INJECT review tool_call verdict={verdict} "
+            f"issues_count={len(issues)} bounce_count={bounce_count} "
+            f"tool_call_id={tool_call_id}"
         )
 
-        return {"messages": [auditor_msg]}
+        return {"messages": [review_ai, review_result]}
 
     def _write_verdict_jsonl(
         self,
@@ -486,6 +518,44 @@ class VerifierDispatchMiddleware(AgentMiddleware):
         except Exception as e:
             _logger.debug(f"bookmarker spawn failed: {e}")
 
+    @staticmethod
+    def _filter_harness_notices(messages: list) -> list:
+        """Drop harness-injected messages (review tool_call/result pairs) so
+        the main LLM doesn't see them. They stay in state.messages for UI
+        rendering; only the LLM's view is trimmed.
+
+        Without this filter, the injected `AIMessage(tool_calls=[review])` +
+        `ToolMessage` pair looks to LangGraph like a completed tool round,
+        forces the model node to run again, aafter_model fires, another
+        review is spawned, and we loop until the message list explodes.
+        """
+        return [
+            m for m in messages
+            if not getattr(m, "additional_kwargs", {}).get("_harness_notice")
+        ]
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        original = request.messages
+        filtered = self._filter_harness_notices(original)
+        if len(filtered) != len(original):
+            request = request.override(messages=filtered)
+        return handler(request)
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        original = request.messages
+        filtered = self._filter_harness_notices(original)
+        if len(filtered) != len(original):
+            request = request.override(messages=filtered)
+        return await handler(request)
+
     def after_model(self, state: dict[str, Any], runtime) -> dict[str, Any] | None:
         """Sync version (for completeness; LangGraph calls aafter_model)."""
         # Diagnostic: confirm whether LangChain dispatches to sync after_model
@@ -508,7 +578,7 @@ class VerifierDispatchMiddleware(AgentMiddleware):
         print(
             f"🔍 [Verifier] ENTER aafter_model "
             f"msgs={len(state.get('messages', []))} "
-            f"last_idx={state.get('_last_review_msg_idx', 0)} "
+            f"last_idx={_LAST_REVIEW_IDX.get(state.get('root_frame_id') or '', 0)} "
             f"frame_id={state.get('frame_id', 'none')[:8] if state.get('frame_id') else 'none'} "
             f"parent={state.get('parent_frame_id')} "
             f"status={state.get('frame_status')}",

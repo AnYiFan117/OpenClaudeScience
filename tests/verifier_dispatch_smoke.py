@@ -156,14 +156,17 @@ async def test_async_middleware_injects_findings():
 
     assert result is not None, "Should return state updates"
     assert "messages" in result, "Result should have messages"
-    assert len(result["messages"]) > 0, "Should inject HumanMessage"
+    assert len(result["messages"]) == 2, "Should inject AIMessage + ToolMessage pair"
 
-    msg = result["messages"][0]
-    assert isinstance(msg, HumanMessage), f"Should inject HumanMessage, got {type(msg)}"
-    assert "[Auditor]" in msg.content, "Should have [Auditor] prefix in message"
-    assert "verdict=warn" in msg.content, "Should have verdict in message"
-    assert "_harness_notice" in msg.additional_kwargs, "Should have _harness_notice metadata"
-    assert msg.additional_kwargs["_harness_notice"] is True, "Should set _harness_notice=true"
+    ai_msg, tool_msg = result["messages"]
+    from langchain_core.messages import AIMessage as _AIM, ToolMessage as _TM
+    assert isinstance(ai_msg, _AIM), f"First should be AIMessage, got {type(ai_msg)}"
+    assert isinstance(tool_msg, _TM), f"Second should be ToolMessage, got {type(tool_msg)}"
+    assert ai_msg.tool_calls and ai_msg.tool_calls[0]["name"] == "review", "AIMessage should have review tool_call"
+    assert tool_msg.tool_call_id == ai_msg.tool_calls[0]["id"], "ToolMessage id must match tool_call id"
+    assert '"verdict": "warn"' in tool_msg.content, "ToolMessage content should include verdict"
+    assert ai_msg.additional_kwargs.get("_harness_notice") is True, "AIMessage should have _harness_notice"
+    assert tool_msg.additional_kwargs.get("_harness_notice") is True, "ToolMessage should have _harness_notice"
 
     # Cleanup
     _cleanup_root_frame("root1")
@@ -308,26 +311,30 @@ async def test_findings_injected_as_human_message_with_auditor_prefix():
 
     assert result is not None, "Should return state updates"
     assert "messages" in result, "Result should have messages"
-    msg = result["messages"][0]
+    assert len(result["messages"]) == 2, "Should inject AIMessage + ToolMessage pair"
 
-    # Verify message type
-    assert isinstance(msg, HumanMessage), f"Message should be HumanMessage, got {type(msg)}"
+    ai_msg, tool_msg = result["messages"]
+    from langchain_core.messages import AIMessage as _AIM, ToolMessage as _TM
 
-    # Verify [Auditor] prefix
-    assert msg.content.startswith("[Auditor]"), f"Message should start with [Auditor], got: {msg.content[:50]}"
+    # Verify tool-call shape (matches how tool activity is rendered in UI)
+    assert isinstance(ai_msg, _AIM), f"First should be AIMessage, got {type(ai_msg)}"
+    assert isinstance(tool_msg, _TM), f"Second should be ToolMessage, got {type(tool_msg)}"
+    assert ai_msg.tool_calls, "AIMessage must carry tool_calls"
+    assert ai_msg.tool_calls[0]["name"] == "review"
+    assert tool_msg.tool_call_id == ai_msg.tool_calls[0]["id"]
 
-    # Verify metadata flag
-    assert "_harness_notice" in msg.additional_kwargs, "Should have _harness_notice in additional_kwargs"
-    assert msg.additional_kwargs["_harness_notice"] is True, "Should have _harness_notice=true"
+    # Verify metadata flag on both messages
+    assert ai_msg.additional_kwargs.get("_harness_notice") is True
+    assert tool_msg.additional_kwargs.get("_harness_notice") is True
 
-    # Verify content structure
-    assert "verdict=warn" in msg.content, "Should include verdict in message"
-    assert "Issue 1" in msg.content, "Should include issues in message"
-    assert "Fix this" in msg.content, "Should include suggestions in message"
+    # Verify findings payload is embedded in ToolMessage content
+    assert '"verdict": "warn"' in tool_msg.content
+    assert "Issue 1" in tool_msg.content
+    assert "Fix this" in tool_msg.content
 
     # Cleanup
     _cleanup_root_frame("root1")
-    print("✅ findings_injected_as_human_message_with_auditor_prefix")
+    print("✅ findings_injected_as_review_tool_call")
 
 
 async def test_veto_reverts_frame_status_to_running():

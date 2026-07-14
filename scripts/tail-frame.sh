@@ -2,16 +2,19 @@
 # tail-frame.sh — watch live Frame lifecycle events from the InternAgentS logs.
 #
 # Usage:
-#   bash scripts/tail-frame.sh              # tail local-runtime.log
-#   bash scripts/tail-frame.sh backend      # tail backend.log
-#   bash scripts/tail-frame.sh all          # tail both logs
+#   bash scripts/tail-frame.sh                # tail BOTH logs (default)
+#   bash scripts/tail-frame.sh backend        # only backend.log
+#   bash scripts/tail-frame.sh local-runtime  # only local-runtime.log
 #
-# Strips ANSI color escape codes and filters to lines that contain frame
+# Strips ANSI color escape codes and filters to lines containing 🖼️  [Frame]
 # lifecycle markers:
-#   🖼️  [Frame] Root · CREATE
-#   🖼️  [Frame] Root · SKIP
-#   🖼️  [Frame] Ctx  · INJECT
-#   🖼️  [Frame] Tool · UPDATE
+#   Root · CREATE   — FrameRootMiddleware creates a fresh frame
+#   Ctx  · INJECT   — FrameContextMiddleware injects objective into system msg
+#   Tool · UPDATE   — update_frame tool transitions status
+#
+# NOTE: middleware prints usually land in backend.log (that's where the
+# agent graph actually runs). local-runtime.log is the runtime port and
+# typically only shows HTTP traffic. Defaulting to `all` is safest.
 
 set -euo pipefail
 
@@ -19,7 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOG_DIR="$ROOT_DIR/.internagents/logs"
 
-TARGET="${1:-local-runtime}"
+TARGET="${1:-all}"
 
 strip_ansi() {
   sed 's/\x1b\[[0-9;]*m//g'
@@ -47,11 +50,11 @@ case "$TARGET" in
     tail_log "$LOG_DIR/backend.log"
     ;;
   all | both)
-    printf '[tail-frame] 📜 watching both logs (interleaved)\n'
-    tail -n 200 -f "$LOG_DIR/local-runtime.log" "$LOG_DIR/backend.log" 2>&1 | strip_ansi | filter_frame
+    printf '[tail-frame] 📜 watching backend.log + local-runtime.log (interleaved)\n'
+    tail -n 200 -f "$LOG_DIR/backend.log" "$LOG_DIR/local-runtime.log" 2>&1 | strip_ansi | filter_frame
     ;;
   *)
-    printf '[tail-frame] Usage: %s [local-runtime|backend|all]\n' "$0" >&2
+    printf '[tail-frame] Usage: %s [all|backend|local-runtime]\n' "$0" >&2
     exit 1
     ;;
 esac

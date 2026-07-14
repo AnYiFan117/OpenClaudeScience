@@ -27,7 +27,7 @@ from typing import Any, Awaitable, Callable
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from internagents.frame_state import (
     TERMINAL_FRAME_STATUSES,
@@ -265,27 +265,37 @@ class VerifierDispatchMiddleware(AgentMiddleware):
         state: dict[str, Any],
         findings: dict[str, Any],
     ) -> dict[str, Any]:
-        """Inject findings as SystemMessage and return state updates."""
+        """Inject findings as HumanMessage with [Auditor] prefix and return state updates.
+
+        The findings are formatted as a user-role message so the main LLM treats it
+        as a real interlocutor input (matching Claude Science behavior). The message
+        includes metadata flag _harness_notice=true for special UI rendering.
+        """
         verdict = findings.get("verdict", "unknown")
         issues = findings.get("issues", [])
         suggestions = findings.get("suggestions", [])
+        bounce_count = _VERIFICATION_BOUNCES.get(state.get("root_frame_id", ""), 0)
 
         issues_str = "\n".join(f"- {issue}" for issue in (issues or []))
         suggestions_str = "\n".join(f"- {suggestion}" for suggestion in (suggestions or []))
 
-        feedback_text = f"[Reviewer feedback]\nVerdict: {verdict}"
+        # Format: [Auditor] verdict=... bounce_count=... on first line, then structured output
+        auditor_text = f"[Auditor] verdict={verdict} bounce_count={bounce_count}"
         if issues_str:
-            feedback_text += f"\n\nIssues:\n{issues_str}"
+            auditor_text += f"\n\nIssues:\n{issues_str}"
         if suggestions_str:
-            feedback_text += f"\n\nSuggestions:\n{suggestions_str}"
+            auditor_text += f"\n\nSuggestions:\n{suggestions_str}"
 
-        # Inject as SystemMessage
-        sys_msg = SystemMessage(content_blocks=[{"type": "text", "text": feedback_text}])
+        # Inject as HumanMessage with harness metadata
+        auditor_msg = HumanMessage(
+            content=auditor_text,
+            additional_kwargs={"_harness_notice": True},
+        )
 
-        _dbg(f"INJECT SystemMessage verdict={verdict} issues_count={len(issues or [])}")
+        _dbg(f"INJECT HumanMessage verdict={verdict} issues_count={len(issues or [])} bounce_count={bounce_count}")
 
         return {
-            "messages": [sys_msg],
+            "messages": [auditor_msg],
             "_last_review_msg_idx": len(state.get("messages", [])),
             "_last_frame_status": state.get("frame_status", "running"),
         }
@@ -352,20 +362,43 @@ class VerifierDispatchMiddleware(AgentMiddleware):
 
     def after_model(self, state: dict[str, Any], runtime) -> dict[str, Any] | None:
         """Sync version (for completeness; LangGraph calls aafter_model)."""
-        # This is a stub; actual execution happens in aafter_model
+        # Diagnostic: confirm whether LangChain dispatches to sync after_model
+        print(
+            f"🔍 [Verifier] SYNC after_model called "
+            f"msgs={len(state.get('messages', []))} "
+            f"frame_id={state.get('frame_id', 'none')[:8] if state.get('frame_id') else 'none'}",
+            flush=True,
+        )
         return None
 
     async def aafter_model(self, state: dict[str, Any], runtime) -> dict[str, Any] | None:
-        """Main hook: checkpoint, review, inject findings."""
+        """Main hook: checkpoint, review, inject findings, and apply veto gate if needed.
+
+        Veto gate: if frame was transitioning to terminal (completed/pending_user_input)
+        and reviewer found issues, revert frame_status to 'running' to force another
+        iteration of the main agent.
+        """
+        # Unconditional entry marker for debugging — remove once verified
+        print(
+            f"🔍 [Verifier] ENTER aafter_model "
+            f"msgs={len(state.get('messages', []))} "
+            f"last_idx={state.get('_last_review_msg_idx', 0)} "
+            f"frame_id={state.get('frame_id', 'none')[:8] if state.get('frame_id') else 'none'} "
+            f"parent={state.get('parent_frame_id')} "
+            f"status={state.get('frame_status')}",
+            flush=True,
+        )
         root_frame_id = state.get("root_frame_id")
         frame_status = state.get("frame_status", "running")
 
         # Check if we should checkpoint
         if not self._should_checkpoint(state):
+            print(f"🔍 [Verifier] SKIP: _should_checkpoint returned False", flush=True)
             return None
 
         # Check guards
         if self._should_suppress(state):
+            print(f"🔍 [Verifier] SKIP: _should_suppress returned True", flush=True)
             return None
 
         # Run reviewer
@@ -392,11 +425,37 @@ class VerifierDispatchMiddleware(AgentMiddleware):
         # Inject findings
         result = self._inject_findings(state, findings)
 
+        # Apply veto gate: if frame was transitioning to terminal status and findings
+        # indicate issues, revert frame_status to 'running' to force main to run again
+        verdict = findings.get("verdict", "unknown")
+        config = self._get_verification_config()
+        max_bounces = config.get("max_consecutive_bounces", 3)
+        bounce_count = _VERIFICATION_BOUNCES.get(root_frame_id, 0)
+
+        if (
+            frame_status in {"completed", "pending_user_input"}
+            and verdict != "pass"
+            and bounce_count < max_bounces
+        ):
+            # Veto: revert frame_status to running to force main to run again
+            result["frame_status"] = "running"
+            _VERIFICATION_BOUNCES[root_frame_id] = bounce_count + 1
+            _dbg(
+                f"VETO gate: frame_status was '{frame_status}', "
+                f"verdict={verdict}, reverting to 'running' "
+                f"(bounce {bounce_count + 1}/{max_bounces})"
+            )
+        elif verdict != "pass":
+            _dbg(
+                f"NO VETO (frame_status={frame_status}, verdict={verdict}, "
+                f"bounce={bounce_count}/{max_bounces})"
+            )
+
         # Maybe spawn bookmarker (fire-and-forget)
         await self._maybe_spawn_bookmarker(state)
 
-        # Cleanup if frame is terminal
-        if root_frame_id and frame_status in TERMINAL_FRAME_STATUSES:
+        # Cleanup if frame is terminal (and not vetoed back to running)
+        if root_frame_id and result.get("frame_status", frame_status) in TERMINAL_FRAME_STATUSES:
             _cleanup_root_frame(root_frame_id)
             _dbg(f"CLEANUP root_frame_id={root_frame_id}")
 

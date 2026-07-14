@@ -119,7 +119,7 @@ def test_middleware_skips_after_max_bounces():
 
 
 async def test_async_middleware_injects_findings():
-    """Middleware should inject findings as SystemMessage after reviewer."""
+    """Middleware should inject findings as HumanMessage with [Auditor] prefix after reviewer."""
     config = {
         "verification": {
             "enabled": True,
@@ -156,13 +156,14 @@ async def test_async_middleware_injects_findings():
 
     assert result is not None, "Should return state updates"
     assert "messages" in result, "Result should have messages"
-    assert len(result["messages"]) > 0, "Should inject SystemMessage"
+    assert len(result["messages"]) > 0, "Should inject HumanMessage"
 
     msg = result["messages"][0]
-    assert isinstance(msg, SystemMessage), f"Should inject SystemMessage, got {type(msg)}"
-    assert "Reviewer feedback" in msg.content or any(
-        "Reviewer feedback" in str(b.get("text", "")) for b in msg.content_blocks if isinstance(b, dict)
-    ), "Should have reviewer feedback in message"
+    assert isinstance(msg, HumanMessage), f"Should inject HumanMessage, got {type(msg)}"
+    assert "[Auditor]" in msg.content, "Should have [Auditor] prefix in message"
+    assert "verdict=warn" in msg.content, "Should have verdict in message"
+    assert "_harness_notice" in msg.additional_kwargs, "Should have _harness_notice metadata"
+    assert msg.additional_kwargs["_harness_notice"] is True, "Should set _harness_notice=true"
 
     # Cleanup
     _cleanup_root_frame("root1")
@@ -269,6 +270,113 @@ async def test_middleware_cleanup_on_terminal_status():
     print("✅ middleware_cleanup_on_terminal_status")
 
 
+async def test_findings_injected_as_human_message_with_auditor_prefix():
+    """Findings should be injected as HumanMessage with [Auditor] prefix and _harness_notice metadata."""
+    config = {
+        "verification": {
+            "enabled": True,
+            "checkpoint_message_threshold": 6,
+            "bookmarks_enabled": False,
+        }
+    }
+    middleware = VerifierDispatchMiddleware(agent_config_dict=config)
+
+    mock_reviewer_frame = {
+        "id": "reviewer1",
+        "output_data": {
+            "verdict": "warn",
+            "issues": ["Issue 1", "Issue 2"],
+            "suggestions": ["Fix this", "And that"],
+        },
+    }
+
+    state = {
+        "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
+        "_last_review_msg_idx": 0,
+        "frame_id": "frame1",
+        "root_frame_id": "root1",
+        "frame_status": "running",
+    }
+
+    with patch("internagents.frame_service.spawn_reviewer", new_callable=AsyncMock) as mock_spawn:
+        mock_spawn.return_value = mock_reviewer_frame
+
+        result = await middleware.aafter_model(state, runtime=None)
+
+    assert result is not None, "Should return state updates"
+    assert "messages" in result, "Result should have messages"
+    msg = result["messages"][0]
+
+    # Verify message type
+    assert isinstance(msg, HumanMessage), f"Message should be HumanMessage, got {type(msg)}"
+
+    # Verify [Auditor] prefix
+    assert msg.content.startswith("[Auditor]"), f"Message should start with [Auditor], got: {msg.content[:50]}"
+
+    # Verify metadata flag
+    assert "_harness_notice" in msg.additional_kwargs, "Should have _harness_notice in additional_kwargs"
+    assert msg.additional_kwargs["_harness_notice"] is True, "Should have _harness_notice=true"
+
+    # Verify content structure
+    assert "verdict=warn" in msg.content, "Should include verdict in message"
+    assert "Issue 1" in msg.content, "Should include issues in message"
+    assert "Fix this" in msg.content, "Should include suggestions in message"
+
+    # Cleanup
+    _cleanup_root_frame("root1")
+    print("✅ findings_injected_as_human_message_with_auditor_prefix")
+
+
+async def test_veto_reverts_frame_status_to_running():
+    """Veto gate should revert frame_status to 'running' when findings have issues and bounces < max."""
+    config = {
+        "verification": {
+            "enabled": True,
+            "checkpoint_message_threshold": 6,
+            "bookmarks_enabled": False,
+            "max_consecutive_bounces": 3,
+        }
+    }
+    middleware = VerifierDispatchMiddleware(agent_config_dict=config)
+
+    # Prime bounces to be just below max
+    _VERIFICATION_BOUNCES["root1"] = 1
+
+    mock_reviewer_frame = {
+        "id": "reviewer1",
+        "output_data": {
+            "verdict": "warn",  # Not "pass", so veto should trigger
+            "issues": ["Found an issue"],
+            "suggestions": ["Fix it"],
+        },
+    }
+
+    # Frame is in terminal status (completed)
+    state = {
+        "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
+        "_last_review_msg_idx": 0,
+        "frame_id": "frame1",
+        "root_frame_id": "root1",
+        "frame_status": "completed",  # Terminal status — should be vetoed back to running
+    }
+
+    with patch("internagents.frame_service.spawn_reviewer", new_callable=AsyncMock) as mock_spawn:
+        mock_spawn.return_value = mock_reviewer_frame
+
+        result = await middleware.aafter_model(state, runtime=None)
+
+    assert result is not None, "Should return state updates"
+    assert "frame_status" in result, "Result should include frame_status"
+    assert result["frame_status"] == "running", f"Frame status should be reverted to 'running', got {result['frame_status']}"
+
+    # Verify bounce counter was incremented
+    assert _VERIFICATION_BOUNCES.get("root1") == 2, f"Bounce count should be 2, got {_VERIFICATION_BOUNCES.get('root1')}"
+
+    # Cleanup
+    _cleanup_root_frame("root1")
+    print("✅ veto_reverts_frame_status_to_running")
+
+
 def run_all_tests():
     """Run all sync tests and return success status."""
     tests = [
@@ -296,6 +404,8 @@ async def run_all_async_tests():
         test_async_middleware_injects_findings,
         test_middleware_bookmarker_only_fires_when_enabled,
         test_middleware_cleanup_on_terminal_status,
+        test_findings_injected_as_human_message_with_auditor_prefix,
+        test_veto_reverts_frame_status_to_running,
     ]
 
     for test in tests:

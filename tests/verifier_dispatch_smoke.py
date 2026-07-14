@@ -31,7 +31,7 @@ def test_middleware_triggers_at_threshold():
 
     state = {
         "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
-        "_last_review_msg_idx": 0,
+        "_last_review_msg_idx": 0,  # legacy state key, no longer read by middleware
         "frame_id": "frame1",
         "root_frame_id": "root1",
         "frame_status": "running",
@@ -54,7 +54,7 @@ def test_middleware_skips_when_disabled():
 
     state = {
         "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
-        "_last_review_msg_idx": 0,
+        "_last_review_msg_idx": 0,  # legacy state key, no longer read by middleware
         "frame_id": "frame1",
         "root_frame_id": "root1",
         "frame_status": "running",
@@ -77,7 +77,7 @@ def test_middleware_skips_child_frame():
 
     state = {
         "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
-        "_last_review_msg_idx": 0,
+        "_last_review_msg_idx": 0,  # legacy state key, no longer read by middleware
         "frame_id": "frame1",
         "root_frame_id": "root1",
         "parent_frame_id": "parent-frame-id",  # Child frame!
@@ -104,7 +104,7 @@ def test_middleware_skips_after_max_bounces():
 
     state = {
         "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
-        "_last_review_msg_idx": 0,
+        "_last_review_msg_idx": 0,  # legacy state key, no longer read by middleware
         "frame_id": "frame1",
         "root_frame_id": "root1",
         "frame_status": "running",
@@ -129,7 +129,7 @@ async def test_async_middleware_injects_findings():
     }
     middleware = VerifierDispatchMiddleware(agent_config_dict=config)
 
-    # Mock reviewer frame output
+    # Mock reviewer graph output (middleware calls get_agent_graph("local","reviewer").ainvoke)
     mock_reviewer_frame = {
         "id": "reviewer1",
         "output_data": {
@@ -141,17 +141,17 @@ async def test_async_middleware_injects_findings():
 
     state = {
         "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
-        "_last_review_msg_idx": 0,
         "frame_id": "frame1",
         "root_frame_id": "root1",
         "frame_status": "running",
     }
 
-    # Mock spawn_reviewer (import from frame_service where it's actually used)
-    with patch("internagents.frame_service.spawn_reviewer", new_callable=AsyncMock) as mock_spawn:
-        mock_spawn.return_value = mock_reviewer_frame
-
-        # Run the middleware
+    # Mock the reviewer graph returned by get_agent_graph
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=mock_reviewer_frame)
+    with patch(
+        "internagents.agent_graph.get_agent_graph", return_value=mock_graph
+    ):
         result = await middleware.aafter_model(state, runtime=None)
 
     assert result is not None, "Should return state updates"
@@ -208,7 +208,7 @@ async def test_middleware_bookmarker_only_fires_when_enabled():
 
     state = {
         "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
-        "_last_review_msg_idx": 0,
+        "_last_review_msg_idx": 0,  # legacy state key, no longer read by middleware
         "frame_id": "frame1",
         "root_frame_id": "root1",
         "frame_status": "running",
@@ -220,8 +220,9 @@ async def test_middleware_bookmarker_only_fires_when_enabled():
         "output_data": {"verdict": "pass"},
     }
 
-    with patch("internagents.frame_service.spawn_reviewer", new_callable=AsyncMock) as mock_spawn:
-        mock_spawn.return_value = mock_reviewer_frame
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=mock_reviewer_frame)
+    with patch("internagents.agent_graph.get_agent_graph", return_value=mock_graph):
 
         with patch("internagents.frame_service.spawn_bookmarker_background_task", new_callable=AsyncMock) as mock_bookmarker:
             await middleware.aafter_model(state, runtime=None)
@@ -246,7 +247,7 @@ async def test_middleware_cleanup_on_terminal_status():
 
     state = {
         "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
-        "_last_review_msg_idx": 0,
+        "_last_review_msg_idx": 0,  # legacy state key, no longer read by middleware
         "frame_id": "frame1",
         "root_frame_id": "root1",
         "frame_status": "completed",  # Terminal status
@@ -260,8 +261,9 @@ async def test_middleware_cleanup_on_terminal_status():
         "output_data": {"verdict": "pass"},
     }
 
-    with patch("internagents.frame_service.spawn_reviewer", new_callable=AsyncMock) as mock_spawn:
-        mock_spawn.return_value = mock_reviewer_frame
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=mock_reviewer_frame)
+    with patch("internagents.agent_graph.get_agent_graph", return_value=mock_graph):
 
         await middleware.aafter_model(state, runtime=None)
 
@@ -292,15 +294,16 @@ async def test_findings_injected_as_human_message_with_auditor_prefix():
 
     state = {
         "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
-        "_last_review_msg_idx": 0,
         "frame_id": "frame1",
         "root_frame_id": "root1",
         "frame_status": "running",
     }
 
-    with patch("internagents.frame_service.spawn_reviewer", new_callable=AsyncMock) as mock_spawn:
-        mock_spawn.return_value = mock_reviewer_frame
-
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=mock_reviewer_frame)
+    with patch(
+        "internagents.agent_graph.get_agent_graph", return_value=mock_graph
+    ):
         result = await middleware.aafter_model(state, runtime=None)
 
     assert result is not None, "Should return state updates"
@@ -354,14 +357,15 @@ async def test_veto_reverts_frame_status_to_running():
     # Frame is in terminal status (completed)
     state = {
         "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
-        "_last_review_msg_idx": 0,
+        "_last_review_msg_idx": 0,  # legacy state key, no longer read by middleware
         "frame_id": "frame1",
         "root_frame_id": "root1",
         "frame_status": "completed",  # Terminal status — should be vetoed back to running
     }
 
-    with patch("internagents.frame_service.spawn_reviewer", new_callable=AsyncMock) as mock_spawn:
-        mock_spawn.return_value = mock_reviewer_frame
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=mock_reviewer_frame)
+    with patch("internagents.agent_graph.get_agent_graph", return_value=mock_graph):
 
         result = await middleware.aafter_model(state, runtime=None)
 

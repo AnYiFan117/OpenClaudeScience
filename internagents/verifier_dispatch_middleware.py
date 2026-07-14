@@ -63,14 +63,87 @@ def _frame_from_state(state: dict[str, Any]) -> dict[str, Any] | None:
 # Module-level state keyed by root_frame_id
 _VERIFICATION_BOUNCES: dict[str, int] = {}
 _BACKGROUND_BOOKMARKER_TASKS: dict[str, asyncio.Task] = {}
+# Bug fix: LangGraph's default state reducer does not persist unknown top-level
+# keys returned from middlewares, so `_last_review_msg_idx` in the returned
+# state was silently dropped and checkpoint delta stayed anchored at 0 (every
+# 3 new messages re-triggered the reviewer). Track it out-of-band instead.
+_LAST_REVIEW_IDX: dict[str, int] = {}
+
+# Pre-create verdicts dir at module import time (startup phase, before
+# LangGraph's blockbuster is active) so subsequent JSONL writes don't need
+# a sync mkdir inside async request handlers.
+_VERDICTS_DIR = Path.home() / ".internagents" / "verdicts"
+try:
+    _VERDICTS_DIR.mkdir(parents=True, exist_ok=True)
+except OSError as _e:
+    _logger.warning(f"failed to pre-create verdicts dir {_VERDICTS_DIR}: {_e}")
 
 
 def _cleanup_root_frame(root_frame_id: str) -> None:
     """Clean up module-level state for a root frame."""
     _VERIFICATION_BOUNCES.pop(root_frame_id, None)
+    _LAST_REVIEW_IDX.pop(root_frame_id, None)
     task = _BACKGROUND_BOOKMARKER_TASKS.pop(root_frame_id, None)
     if task is not None:
         task.cancel()
+
+
+def _msg_role(msg: Any) -> str:
+    """Human-readable role label for a message (for review transcripts)."""
+    if isinstance(msg, HumanMessage):
+        return "User"
+    if isinstance(msg, AIMessage):
+        return "Assistant"
+    if isinstance(msg, SystemMessage):
+        return "System"
+    return getattr(msg, "type", type(msg).__name__)
+
+
+def _msg_content_snippet(msg: Any, max_chars: int = 800) -> str:
+    """Extract a text snippet from a message, handling multimodal content."""
+    content = getattr(msg, "content", "")
+    if isinstance(content, str):
+        s = content
+    elif isinstance(content, list):
+        s = " ".join(
+            b.get("text", "") for b in content if isinstance(b, dict)
+        )
+    else:
+        s = str(content)
+    if len(s) > max_chars:
+        return s[:max_chars] + "..."
+    return s
+
+
+def _format_review_prompt(messages: list, objective: str) -> str:
+    """Build the initial HumanMessage the reviewer LLM will see.
+
+    Without messages in state.messages, the reviewer LangGraph agent has
+    no input and terminates immediately. This function renders the parent
+    agent's transcript into a text block plus a structured-output directive.
+    """
+    lines = ["Review the following transcript from the main agent.", ""]
+    if objective:
+        lines.append(f"Objective: {objective}")
+        lines.append("")
+    lines.append(f"Transcript ({len(messages)} messages):")
+    lines.append("")
+    for i, msg in enumerate(messages):
+        role = _msg_role(msg)
+        content = _msg_content_snippet(msg)
+        lines.append(f"[{i + 1}] [{role}] {content}")
+    lines.append("")
+    lines.append(
+        'Report findings as a single JSON object on its own line with keys: '
+        'verdict ("pass" | "fail" | "warn"), '
+        'issues (list of strings), suggestions (list of strings).'
+    )
+    lines.append(
+        "Trace claims to the transcript above — a value that appears "
+        "fabricated or a plan deviation is a valid issue. A value you "
+        "cannot trace inside this window is NOT a finding."
+    )
+    return "\n".join(lines)
 
 
 def _append_to_system_message(
@@ -176,7 +249,8 @@ class VerifierDispatchMiddleware(AgentMiddleware):
             return False
 
         messages = state.get("messages", [])
-        last_review_idx = state.get("_last_review_msg_idx", 0)
+        root_frame_id = state.get("root_frame_id") or ""
+        last_review_idx = _LAST_REVIEW_IDX.get(root_frame_id, 0)
         threshold = config.get("checkpoint_message_threshold", 6)
 
         # Condition 1: message delta exceeded
@@ -217,8 +291,15 @@ class VerifierDispatchMiddleware(AgentMiddleware):
         return False
 
     async def _run_reviewer(self, state: dict[str, Any]) -> dict[str, Any] | None:
-        """Spawn reviewer and extract findings."""
-        from internagents.frame_service import spawn_reviewer
+        """Spawn reviewer with parent transcript as HumanMessage input.
+
+        The reviewer LangGraph agent needs `state.messages` to have real input;
+        passing metadata in `input_data` alone leaves the LLM with no prompt and
+        it terminates immediately. We construct an initial_state that includes
+        a HumanMessage rendering the parent's transcript.
+        """
+        from internagents.agent_graph import get_agent_graph
+        from internagents.frame_state import create_child_frame
 
         root_frame_id = state.get("root_frame_id")
         frame = _frame_from_state(state)
@@ -227,35 +308,59 @@ class VerifierDispatchMiddleware(AgentMiddleware):
             return None
 
         try:
-            # Reconstruct parent frame for reviewer input
-            parent_frame = {
+            # Build a minimal parent-frame stub so create_child_frame can hang
+            # the child off it (records parent_frame_id + shared root_frame_id).
+            parent_stub = {
                 "id": frame["id"],
                 "root_frame_id": frame["root_frame_id"],
                 "agent_name": "main",
                 "status": "running",
             }
-
-            # Build review target: current messages + frame context
-            review_target = {
-                "messages": state.get("messages", []),
-                "frame_id": frame["id"],
-            }
-
-            _dbg(f"CHECKPOINT delta={len(state.get('messages', [])) - state.get('_last_review_msg_idx', 0)} → await reviewer")
-
-            # Synchronous wait for reviewer
-            reviewer_frame = await spawn_reviewer(
-                parent=parent_frame,
-                review_target=review_target,
+            child = create_child_frame(
+                parent_stub,
+                "reviewer",
+                input_data={
+                    "review_target_frame_id": frame["id"],
+                    "harness_prompt": True,
+                },
             )
 
-            _dbg(f"REVIEWER done status={reviewer_frame.get('status')}")
+            # Render parent transcript for the reviewer LLM
+            parent_messages = state.get("messages", [])
+            parent_input_data = state.get("input_data") or {}
+            objective = str(parent_input_data.get("objective") or "")
+            review_prompt = _format_review_prompt(parent_messages, objective)
 
-            return reviewer_frame
+            # Reviewer initial state — MUST include messages so LLM has input
+            initial_state = {
+                "frame_id": child["id"],
+                "root_frame_id": child["root_frame_id"],
+                "parent_frame_id": child.get("parent_frame_id"),
+                "agent_name": "reviewer",
+                "frame_status": "running",
+                "messages": [HumanMessage(content=review_prompt)],
+                "input_data": child.get("input_data", {}),
+            }
+
+            _dbg(
+                f"CHECKPOINT delta="
+                f"{len(parent_messages) - _LAST_REVIEW_IDX.get(root_frame_id or '', 0)} "
+                f"→ await reviewer (parent_msgs={len(parent_messages)})"
+            )
+
+            reviewer_graph = get_agent_graph("local", "reviewer")
+            invoke_config = {"configurable": {"thread_id": child["id"]}}
+            result = await reviewer_graph.ainvoke(initial_state, config=invoke_config)
+
+            _dbg(
+                f"REVIEWER done frame_status="
+                f"{result.get('frame_status', 'unknown') if isinstance(result, dict) else 'not-dict'} "
+                f"messages={len(result.get('messages', [])) if isinstance(result, dict) else 0}"
+            )
+            return result
 
         except Exception as e:
             _logger.exception(f"reviewer spawn failed: {e}")
-            # Increment bounce count on any exception
             if root_frame_id:
                 _VERIFICATION_BOUNCES[root_frame_id] = _VERIFICATION_BOUNCES.get(root_frame_id, 0) + 1
             return None
@@ -296,8 +401,6 @@ class VerifierDispatchMiddleware(AgentMiddleware):
 
         return {
             "messages": [auditor_msg],
-            "_last_review_msg_idx": len(state.get("messages", [])),
-            "_last_frame_status": state.get("frame_status", "running"),
         }
 
     def _write_verdict_jsonl(
@@ -306,12 +409,14 @@ class VerifierDispatchMiddleware(AgentMiddleware):
         findings: dict[str, Any],
         at_message_index: int,
     ) -> None:
-        """Write verdict to JSONL file for debugging."""
-        try:
-            verdicts_dir = Path.home() / ".internagents" / "verdicts"
-            verdicts_dir.mkdir(parents=True, exist_ok=True)
+        """Write verdict to JSONL file for debugging.
 
-            output_file = verdicts_dir / f"{root_frame_id}.jsonl"
+        Note: `_VERDICTS_DIR` is pre-created at module import time so this
+        function doesn't need to call `os.mkdir` inside the async request
+        handler (which would trip LangGraph's blockbuster).
+        """
+        try:
+            output_file = _VERDICTS_DIR / f"{root_frame_id}.jsonl"
 
             verdict_record = {
                 "timestamp": int(time.time()),
@@ -424,6 +529,13 @@ class VerifierDispatchMiddleware(AgentMiddleware):
 
         # Inject findings
         result = self._inject_findings(state, findings)
+
+        # Update module-level checkpoint index so next checkpoint delta anchors
+        # from this point (LangGraph state reducer doesn't persist unknown
+        # top-level keys — we tracked _last_review_msg_idx in state and it
+        # never made it back, causing every model turn to re-trigger review).
+        if root_frame_id:
+            _LAST_REVIEW_IDX[root_frame_id] = len(state.get("messages", []))
 
         # Apply veto gate: if frame was transitioning to terminal status and findings
         # indicate issues, revert frame_status to 'running' to force main to run again

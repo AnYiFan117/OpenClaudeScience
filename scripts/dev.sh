@@ -5,6 +5,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT_DIR"
 
+# Ensure internal .svc.pjlab.local / .pjlab.local hosts (e.g. MCP servers on
+# the internal PJLab cluster) bypass the outbound httpproxy. The system
+# no_proxy usually includes .pjlab.org.cn but not the .local variants used
+# by K8s service DNS.
+_INTERNAL_NO_PROXY=".pjlab.local,.svc.pjlab.local"
+export no_proxy="${no_proxy:+$no_proxy,}$_INTERNAL_NO_PROXY"
+export NO_PROXY="${NO_PROXY:+$NO_PROXY,}$_INTERNAL_NO_PROXY"
+
 HOST="127.0.0.1"
 BACKEND_PORT="${INTERNAGENTS_BACKEND_PORT:-2024}"
 DEFAULT_LOCAL_RUNTIME_PORT="${INTERNAGENTS_LOCAL_RUNTIME_PORT_START:-22024}"

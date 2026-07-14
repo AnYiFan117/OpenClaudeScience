@@ -24,13 +24,20 @@
   "model_selection_mode": "manual",
   "manual_model": "deepseek-v4-flash",
   "model_provider": "openai_compatible",
-  "openai_compatible_model": "deepseek-v4-flash",
-  "openai_compatible_base_url": "http://35.220.164.252:3888",
+  "openai_compatible_model": "bailian/deepseek-v4-flash",
+  "openai_compatible_base_url": "http://35.220.164.252:3888/v1",
   "web_search": {
     "enabled": true,
     "provider": "duckduckgo",
     "max_results": 5,
     "timeout_seconds": 10
   },
-  "ui_language": "zh"
+  "ui_language": "zh",
+  "verification": {
+    "enabled": true,
+    "bookmarks_enabled": false,
+    "checkpoint_message_threshold": 6,
+    "max_consecutive_bounces": 3
+  },
+  "onboarding_completed_workspaces": {}
 }

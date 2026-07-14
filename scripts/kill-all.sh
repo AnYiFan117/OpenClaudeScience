@@ -26,6 +26,16 @@ for port in "${PORTS[@]}"; do
     echo "[kill-all] port $port pid=$pid cmd=$cmd"
     kill -TERM "$pid" 2>/dev/null || true
     killed_any=1
+
+    # For Next.js: kill the `node next dev` parent too, else it respawns the child immediately
+    ppid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    if [ -n "$ppid" ] && [ "$ppid" != "1" ] && kill -0 "$ppid" 2>/dev/null; then
+      pcmd="$(ps -o cmd= -p "$ppid" 2>/dev/null | head -c 200)"
+      if printf '%s' "$pcmd" | grep -qE "next(-server)?( dev)?|npm.*dev"; then
+        echo "[kill-all] port $port parent pid=$ppid cmd=$pcmd (respawn source)"
+        kill -TERM "$ppid" 2>/dev/null || true
+      fi
+    fi
   done
 done
 

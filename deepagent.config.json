@@ -24,13 +24,13 @@
   "model_selection_mode": "manual",
   "manual_model": "deepseek-v4-flash",
   "model_provider": "openai_compatible",
-  "openai_compatible_model": "deepseek-v4-pro",
-  "openai_compatible_base_url": "https://api.deepseek.com/v1",
+  "openai_compatible_model": "deepseek-v4-flash",
+  "openai_compatible_base_url": "http://35.220.164.252:3888",
   "web_search": {
     "enabled": true,
     "provider": "duckduckgo",
     "max_results": 5,
     "timeout_seconds": 10
   },
-  "ui_language": "en"
+  "ui_language": "zh"
 }

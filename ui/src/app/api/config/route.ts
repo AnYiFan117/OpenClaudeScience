@@ -65,7 +65,6 @@ const COMMON_TOOLS = [
   "execute",
   "task",
   "write_todos",
-  "compact_conversation",
   "web_search",
   "fetch_url",
   "start_async_task",

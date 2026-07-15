@@ -96,6 +96,7 @@ from internagents.date_middleware import RuntimeDateContextMiddleware
 from internagents.frame_middleware import FrameContextMiddleware, FrameRootMiddleware
 from internagents.frame_state import ACTIVE_FRAME_STATUSES, normalize_frame_state, update_frame_status
 from internagents.frame_tools import frame_tools
+from internagents.interaction_tools import interaction_tools
 from internagents.internagent_resources import ResourceConfig, load_resource_config
 from internagents.kb_sync_middleware import KbSyncMiddleware
 from internagents.mcp_tools import load_configured_mcp_tools
@@ -606,6 +607,7 @@ def _resolve_skills(config: dict[str, Any]) -> list[str] | None:
 
 def _resolve_tools(config: dict[str, Any]) -> list[Any]:
     tools = list(frame_tools())
+    tools.extend(interaction_tools())
     tools.extend(remote_compute_tools())
     tools.extend(web_search_tools(config))
     tools.extend(load_configured_mcp_tools(config, root_dir=ROOT_DIR))
@@ -1546,11 +1548,6 @@ def _filter_middlewares_for_agent(
         from internagents.verifier_dispatch_middleware import VerifierDispatchMiddleware
         middleware.append(VerifierDispatchMiddleware(agent_config_dict))
 
-    # Onboarding gate — main agent, needs resource to compute workspace id
-    if agent_cfg.name == "main" and resource is not None:
-        from internagents.onboarding_middleware import OnboardingGateMiddleware
-        middleware.append(OnboardingGateMiddleware(resource=resource))
-
     # Always add compatibility and budget middlewares for all agents
     middleware.append(ImageContentCompatibilityMiddleware())
     middleware.append(WebSearchBudgetMiddleware())
@@ -1936,6 +1933,7 @@ if (_env_value("INTERNAGENT_PROCESS_ROLE") or "").lower() == "runtime":
     # Runtime mode: create a single runtime agent (may use per-agent routing via env var)
     agent = create_runtime_agent()
     agent_local = agent
+    agent_onboarding_local = agent
     agent_remote1 = agent
     agent_remote2 = agent
     agent_remote3 = agent
@@ -1959,6 +1957,9 @@ else:
     # For local resource, route through get_agent_graph to apply per-agent filtering.
     # Remote resources use the proxy-only pattern (create_agent_for_resource with remote_url).
     agent_local = get_agent_graph("local", "main")
+    # Onboarding assistant — CS pattern: fresh workspace threads use this
+    # assistant_id instead of `agent_local` for the first-run conversation.
+    agent_onboarding_local = get_agent_graph("local", "onboarding")
     agent_remote1 = _resource_agents.get("remote1") or create_missing_resource_agent(
         "remote1"
     )

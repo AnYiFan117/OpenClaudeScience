@@ -66,6 +66,7 @@ import {
 } from "@/components/ui/resizable";
 import { ChatProvider } from "@/providers/ChatProvider";
 import { ChatInterface } from "@/app/components/ChatInterface";
+import { OnboardingCompletionWatcher } from "@/app/components/OnboardingCompletionWatcher";
 import { RemoteConnectionDialog } from "@/app/components/RemoteConnectionDialog";
 import { ThreadList } from "@/app/components/ThreadList";
 import { WorkspaceViewer } from "@/app/components/WorkspaceViewer";
@@ -176,6 +177,8 @@ interface HomePageInnerProps {
   activeWorkspace: LocalWorkspace | null;
   workspaces: LocalWorkspace[];
   isActiveLocalResource: boolean;
+  isOnboardingActive: boolean;
+  onOnboardingComplete: () => void;
   onResourceChange: (resourceId: string) => Promise<void>;
   onWorkspaceChange: (workspaceId: string) => Promise<void>;
   onWorkspacePick: () => Promise<void>;
@@ -205,6 +208,8 @@ function HomePageInner({
   activeWorkspace,
   workspaces,
   isActiveLocalResource,
+  isOnboardingActive,
+  onOnboardingComplete,
   onResourceChange,
   onWorkspaceChange,
   onWorkspacePick,
@@ -884,6 +889,10 @@ function HomePageInner({
                     </button>
                   ) : null
                 }
+              />
+              <OnboardingCompletionWatcher
+                active={isOnboardingActive}
+                onComplete={onOnboardingComplete}
               />
             </ChatProvider>
           </section>
@@ -1877,8 +1886,50 @@ function HomePageContent() {
   const [resourceId, setResourceId] = useQueryState("resourceId");
   const [workspaceId, setWorkspaceId] = useQueryState("workspaceId");
   const [threadId, setThreadId] = useQueryState("threadId");
+  const [onboardingRequired, setOnboardingRequired] = useState<boolean | null>(
+    null,
+  );
   const previousResourceId = useRef<string | null>(null);
   const deploymentUrl = config?.deploymentUrl;
+
+  const refreshOnboardingStatus = useCallback(
+    async (resource: string | null | undefined) => {
+      const rid = resource || "local";
+      try {
+        const response = await fetch(
+          `/api/onboarding-status?resource=${encodeURIComponent(rid)}`,
+          { cache: "no-store" },
+        );
+        if (!response.ok) {
+          setOnboardingRequired(false);
+          return;
+        }
+        const payload = (await response.json()) as { complete?: boolean };
+        setOnboardingRequired(!payload.complete);
+      } catch {
+        setOnboardingRequired(false);
+      }
+    },
+    [],
+  );
+
+  const markOnboardingComplete = useCallback(
+    async (resource: string | null | undefined) => {
+      const rid = resource || "local";
+      try {
+        await fetch(`/api/onboarding-status`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ resource: rid }),
+        });
+      } catch {
+        // Best-effort: if the write fails, next status GET will re-detect.
+      } finally {
+        setOnboardingRequired(false);
+      }
+    },
+    [],
+  );
 
   const refreshResources = useCallback(
     async (knownResources?: ResourceConfig[]) => {
@@ -2031,6 +2082,15 @@ function HomePageContent() {
 
   useEffect(() => {
     if (!config) return;
+    if (!isLocalDeploymentUrl(config.deploymentUrl)) {
+      setOnboardingRequired(false);
+      return;
+    }
+    refreshOnboardingStatus(resourceId);
+  }, [config, resourceId, refreshOnboardingStatus]);
+
+  useEffect(() => {
+    if (!config) return;
     const selectedResource = getResource(config, resourceId);
     const selectedResourceId = selectedResource?.id || null;
     if (
@@ -2081,6 +2141,11 @@ function HomePageContent() {
   const activeResource = getResource(config, resourceId);
   const activeAssistantId = activeResource?.assistantId || config.assistantId;
   const isActiveLocalResource = activeResource?.id === "local";
+  const isOnboardingActive =
+    isActiveLocalResource && onboardingRequired === true;
+  const effectiveAssistantId = isOnboardingActive
+    ? "agent_onboarding_local"
+    : activeAssistantId;
   const activeWorkspace = isActiveLocalResource
     ? workspaces.find((workspace) => workspace.id === workspaceId) || null
     : {
@@ -2094,9 +2159,9 @@ function HomePageContent() {
 
   return (
     <RemoteAgentProvider
-      key={`${config.deploymentUrl}:${activeAssistantId}`}
+      key={`${config.deploymentUrl}:${effectiveAssistantId}`}
       deploymentUrl={config.deploymentUrl}
-      assistantId={activeAssistantId}
+      assistantId={effectiveAssistantId}
       apiKey={langsmithApiKey}
     >
       <HomePageInner
@@ -2106,6 +2171,8 @@ function HomePageContent() {
         activeWorkspace={activeWorkspace}
         workspaces={workspaces}
         isActiveLocalResource={isActiveLocalResource}
+        isOnboardingActive={isOnboardingActive}
+        onOnboardingComplete={() => markOnboardingComplete(activeResource.id)}
         onResourceChange={async (nextResourceId) => {
           await setResourceId(nextResourceId);
           const nextResource = getResource(config, nextResourceId);

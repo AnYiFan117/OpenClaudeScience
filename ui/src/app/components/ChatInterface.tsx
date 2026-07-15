@@ -49,6 +49,10 @@ import {
   BatchToolApprovalInterrupt,
   ToolApprovalInterrupt,
 } from "@/app/components/ToolApprovalInterrupt";
+import {
+  AskUserInterrupt,
+  type AskUserPrompt,
+} from "@/app/components/AskUserInterrupt";
 import type {
   TodoItem,
   ToolCall,
@@ -2547,6 +2551,12 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(
       ).map((config: ReviewConfig) => normalizeReviewConfig(config));
     }, [interruptValues]);
 
+    const askUserPrompts = useMemo(() => {
+      return interruptValues.filter(
+        (value: any) => value && value.type === "ask_user"
+      ) as AskUserPrompt[];
+    }, [interruptValues]);
+
     const interruptedToolNames = useMemo(() => {
       return new Set(actionRequests.map((request) => request.name));
     }, [actionRequests]);
@@ -3479,6 +3489,18 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(
                         />
                       ))
                     )}
+                  </div>
+                )}
+                {askUserPrompts.length > 0 && (
+                  <div className="mt-4 flex w-full flex-col gap-3">
+                    {askUserPrompts.map((prompt, index) => (
+                      <AskUserInterrupt
+                        key={`ask-user-${index}`}
+                        prompt={prompt}
+                        onResume={resumeInterrupt}
+                        isLoading={isLoading}
+                      />
+                    ))}
                   </div>
                 )}
               </>

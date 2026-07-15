@@ -5,6 +5,7 @@
   "graphs": {
     "agent": "./agent.py:agent",
     "agent_local": "./agent.py:agent_local",
+    "agent_onboarding_local": "./agent.py:agent_onboarding_local",
     "agent_remote1": "./agent.py:agent_remote1",
     "agent_remote2": "./agent.py:agent_remote2",
     "agent_remote3": "./agent.py:agent_remote3",

@@ -95,6 +95,10 @@ interface ChatInterfaceProps {
   headerActions?: React.ReactNode;
   onOpenInspector?: () => void;
   workspaceRoot?: string;
+  onboardingIntro?: {
+    greeting: string;
+    kickoffSystemNote: string;
+  } | null;
 }
 
 interface AttachmentCopy {
@@ -1092,7 +1096,7 @@ function buildRemoteRuntimeToolMessages(
 }
 
 export const ChatInterface = React.memo<ChatInterfaceProps>(
-  ({ assistant, headerActions, onOpenInspector, workspaceRoot }) => {
+  ({ assistant, headerActions, onOpenInspector, workspaceRoot, onboardingIntro }) => {
     const [metaOpen, setMetaOpen] = useState<
       "goal" | "skills" | "tasks" | "files" | null
     >(null);
@@ -2572,7 +2576,26 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(
         string,
         { message: Message; toolCalls: ToolCall[] }
       >();
-      messages.forEach((message: Message) => {
+      // Filter out the onboarding kickoff HumanMessage — it's a synthetic
+      // "[System] ..." trigger the frontend sent to start the onboarding
+      // agent; showing it to the user would leak internal wiring.
+      const visibleMessages = messages.filter((message: Message) => {
+        if (message.type !== "human") return true;
+        const c = message.content;
+        const text = typeof c === "string"
+          ? c
+          : Array.isArray(c)
+            ? c
+                .map((b: unknown) =>
+                  typeof b === "object" && b !== null && "text" in b
+                    ? String((b as { text?: unknown }).text ?? "")
+                    : "",
+                )
+                .join("")
+            : "";
+        return !text.startsWith("[System] First-run onboarding started");
+      });
+      visibleMessages.forEach((message: Message) => {
         if (message.type === "ai") {
           const toolCallsInMessage: Array<{
             id?: string;
@@ -3236,6 +3259,11 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(
                     </div>
                   </div>
                 )}
+                {onboardingIntro ? (
+                  <div className="mb-4 rounded-lg border border-border/40 bg-muted/20 px-4 py-3 text-sm leading-6 text-foreground whitespace-pre-line">
+                    {onboardingIntro.greeting}
+                  </div>
+                ) : null}
                 {displayMessages.map((data, index) => {
                   const messageUi = ui?.filter(
                     (u: any) => u.metadata?.message_id === data.message.id

@@ -67,6 +67,7 @@ import {
 import { ChatProvider } from "@/providers/ChatProvider";
 import { ChatInterface } from "@/app/components/ChatInterface";
 import { OnboardingCompletionWatcher } from "@/app/components/OnboardingCompletionWatcher";
+import { OnboardingBootstrap } from "@/app/components/OnboardingBootstrap";
 import { RemoteConnectionDialog } from "@/app/components/RemoteConnectionDialog";
 import { ThreadList } from "@/app/components/ThreadList";
 import { WorkspaceViewer } from "@/app/components/WorkspaceViewer";
@@ -178,6 +179,10 @@ interface HomePageInnerProps {
   workspaces: LocalWorkspace[];
   isActiveLocalResource: boolean;
   isOnboardingActive: boolean;
+  onboardingIntro: {
+    greeting: string;
+    kickoffSystemNote: string;
+  } | null;
   onOnboardingComplete: () => void;
   onResourceChange: (resourceId: string) => Promise<void>;
   onWorkspaceChange: (workspaceId: string) => Promise<void>;
@@ -209,6 +214,7 @@ function HomePageInner({
   workspaces,
   isActiveLocalResource,
   isOnboardingActive,
+  onboardingIntro,
   onOnboardingComplete,
   onResourceChange,
   onWorkspaceChange,
@@ -875,6 +881,7 @@ function HomePageInner({
                 workspaceRoot={
                   isActiveLocalResource ? activeWorkspace?.resolvedPath : undefined
                 }
+                onboardingIntro={isOnboardingActive ? onboardingIntro : null}
                 onOpenInspector={() => setInspectorOpen(true)}
                 headerActions={
                   !inspectorOpen ? (
@@ -893,6 +900,10 @@ function HomePageInner({
               <OnboardingCompletionWatcher
                 active={isOnboardingActive}
                 onComplete={onOnboardingComplete}
+              />
+              <OnboardingBootstrap
+                active={isOnboardingActive}
+                intro={onboardingIntro}
               />
             </ChatProvider>
           </section>
@@ -1889,6 +1900,10 @@ function HomePageContent() {
   const [onboardingRequired, setOnboardingRequired] = useState<boolean | null>(
     null,
   );
+  const [onboardingIntro, setOnboardingIntro] = useState<{
+    greeting: string;
+    kickoffSystemNote: string;
+  } | null>(null);
   const previousResourceId = useRef<string | null>(null);
   const deploymentUrl = config?.deploymentUrl;
 
@@ -2090,6 +2105,28 @@ function HomePageContent() {
   }, [config, resourceId, refreshOnboardingStatus]);
 
   useEffect(() => {
+    if (onboardingRequired !== true) {
+      setOnboardingIntro(null);
+      return;
+    }
+    let cancelled = false;
+    fetch("/api/onboarding-intro", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!cancelled && data) {
+          setOnboardingIntro(data);
+        }
+      })
+      .catch(() => {
+        // best-effort: without intro, bootstrap simply won't fire and the
+        // user's next composer message will start the onboarding thread normally.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onboardingRequired]);
+
+  useEffect(() => {
     if (!config) return;
     const selectedResource = getResource(config, resourceId);
     const selectedResourceId = selectedResource?.id || null;
@@ -2172,6 +2209,7 @@ function HomePageContent() {
         workspaces={workspaces}
         isActiveLocalResource={isActiveLocalResource}
         isOnboardingActive={isOnboardingActive}
+        onboardingIntro={isOnboardingActive ? onboardingIntro : null}
         onOnboardingComplete={() => markOnboardingComplete(activeResource.id)}
         onResourceChange={async (nextResourceId) => {
           await setResourceId(nextResourceId);

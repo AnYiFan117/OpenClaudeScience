@@ -39,5 +39,7 @@
     "checkpoint_message_threshold": 8,
     "max_consecutive_bounces": 3
   },
-  "onboarding_completed_workspaces": {}
+  "onboarding_completed_workspaces": {
+    "7efb53844c5ca804": true
+  }
 }

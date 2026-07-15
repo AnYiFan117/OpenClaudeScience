@@ -1901,6 +1901,49 @@ export function useChat({
     ]
   );
 
+  const bootstrapOnboardingThread = useCallback(
+    (kickoffText: string): boolean => {
+      // Idempotent: only fire when there is no active thread yet and no
+      // messages have started to stream. Called by the onboarding intro
+      // bootstrap on entering a fresh onboarding assistant.
+      if (threadId) return false;
+      if ((stream.messages ?? []).length > 0) return false;
+      const kickoffMessage: Message = {
+        id: uuidv4(),
+        type: "human",
+        content: kickoffText,
+      };
+      const newThreadId = uuidv4();
+      clearStreamEvents();
+      markRunStarting();
+      stream.submit(
+        { messages: [kickoffMessage] },
+        withStreamSubmitOptions({
+          metadata: workspaceMetadata,
+          ...invalidImplicitCheckpointOptions,
+          threadId: newThreadId,
+          optimisticValues: (prev: StateType) => ({
+            messages: [...(prev.messages ?? []), kickoffMessage],
+          }),
+          config: buildRunConfig(),
+        })
+      );
+      onHistoryRevalidate?.();
+      return true;
+    },
+    [
+      stream,
+      threadId,
+      clearStreamEvents,
+      markRunStarting,
+      withStreamSubmitOptions,
+      buildRunConfig,
+      onHistoryRevalidate,
+      workspaceMetadata,
+      invalidImplicitCheckpointOptions,
+    ]
+  );
+
   const retryMessage = useCallback(
     (message: Message, options: RetryMessageOptions = {}) => {
       if (message.type !== "human") {
@@ -2404,5 +2447,6 @@ export function useChat({
     stopStream,
     markCurrentThreadAsResolved,
     resumeInterrupt,
+    bootstrapOnboardingThread,
   };
 }

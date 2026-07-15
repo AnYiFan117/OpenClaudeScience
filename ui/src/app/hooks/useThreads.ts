@@ -15,6 +15,41 @@ import {
   resolveThreadListValues,
 } from "@/lib/thread-state";
 
+// Runtime (port 22024) is architecturally unable to answer for coordinator
+// thread_ids in the current deployment: threads live on the coordinator
+// (port 2024) and the runtime does not index by that id, so every call
+// 404s. Once we see the first 404, flip this flag process-wide so the
+// SWR interval doesn't keep re-firing three requests per listed thread.
+let RUNTIME_THREAD_INDEX_UNAVAILABLE = false;
+
+function isNotFoundError(error: unknown): boolean {
+  if (!error) return false;
+  const status = (error as { status?: unknown }).status;
+  if (status === 404) return true;
+  const msg = String((error as { message?: unknown }).message ?? error);
+  return msg.includes("HTTP 404") || msg.includes("Not Found");
+}
+
+async function callRuntime<T>(fn: () => Promise<T>): Promise<T | undefined> {
+  if (RUNTIME_THREAD_INDEX_UNAVAILABLE) return undefined;
+  try {
+    return await fn();
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      if (!RUNTIME_THREAD_INDEX_UNAVAILABLE) {
+        RUNTIME_THREAD_INDEX_UNAVAILABLE = true;
+        console.info(
+          "[useThreads] Runtime does not index coordinator thread_ids " +
+            "(first 404 observed). Skipping runtime fallbacks for the " +
+            "remainder of this session. Coordinator state drives the list."
+        );
+      }
+      return undefined;
+    }
+    throw error;
+  }
+}
+
 export interface ThreadItem {
   id: string;
   updatedAt: Date;
@@ -57,21 +92,27 @@ async function resolveThreadValues(
       pendingRunStatus === "pending" || pendingRunStatus === "running",
     loadRuntimeStateValues: runtimeClient
       ? async () =>
-          (await runtimeClient.threads.getState(thread.thread_id)).values
+          callRuntime(async () =>
+            (await runtimeClient.threads.getState(thread.thread_id)).values
+          )
       : undefined,
     loadRuntimeThreadValues: runtimeClient
-      ? async () => (await runtimeClient.threads.get(thread.thread_id)).values
+      ? async () =>
+          callRuntime(async () =>
+            (await runtimeClient.threads.get(thread.thread_id)).values
+          )
       : undefined,
     loadRuntimeHistoryValues: runtimeClient
-      ? async () => {
-          const history = await runtimeClient.threads.getHistory(
-            thread.thread_id,
-            {
-              limit: 80,
-            }
-          );
-          return history.map((state) => state.values);
-        }
+      ? async () =>
+          (await callRuntime(async () => {
+            const history = await runtimeClient.threads.getHistory(
+              thread.thread_id,
+              {
+                limit: 80,
+              }
+            );
+            return history.map((state) => state.values);
+          })) ?? []
       : undefined,
   });
 }

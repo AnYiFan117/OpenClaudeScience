@@ -15,7 +15,8 @@
     ],
     "active_path": ".internagents/active-skills",
     "selected": [
-      "skills/skill-creator"
+      "skills/skill-creator",
+      "~/.internagents/myskills/mg-alloy-calc"
     ],
     "label": "天玄·千枢科学发现平台"
   },
@@ -40,6 +41,7 @@
     "max_consecutive_bounces": 3
   },
   "onboarding_completed_workspaces": {
-    "7efb53844c5ca804": true
+    "7efb53844c5ca804": true,
+    "f36471801fc61654": true
   }
 }

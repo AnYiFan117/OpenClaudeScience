@@ -1914,6 +1914,13 @@ export function useChat({
         content: kickoffText,
       };
       const newThreadId = uuidv4();
+      // Seed a friendly title before submit — otherwise the derived title
+      // would fall back to the "[System] First-run onboarding started..."
+      // kickoff content. The pending-title effect writes it to thread
+      // metadata once the backend acknowledges the new thread.
+      pendingNewThreadTitleRef.current = "开始使用";
+      pendingNewThreadTitleThreadIdRef.current = newThreadId;
+      setOptimisticThreadTitle("开始使用");
       clearStreamEvents();
       markRunStarting();
       stream.submit(

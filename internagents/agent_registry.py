@@ -169,7 +169,11 @@ AGENT_CONFIGS: dict[AgentName, AgentConfig] = {
         name="onboarding",
         prompt_path=_PROMPTS_DIR / "onboarding.yaml",
         model_override=None,
-        tool_whitelist=("ask_user",),  # Primarily uses ask_user for interaction
+        tool_whitelist=(
+            "ask_user",
+            "mark_workspace_onboarded",
+            "write_memory",
+        ),  # Elicit answers + persist workspace flag + persist user memory
         tool_blacklist=(
             "bash", "python", "r", "repl", "save_artifacts", "manage_environments",
             "manage_packages", "write_file", "edit_file", "fetch_article_fulltext",

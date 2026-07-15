@@ -1548,6 +1548,13 @@ def _filter_middlewares_for_agent(
         from internagents.verifier_dispatch_middleware import VerifierDispatchMiddleware
         middleware.append(VerifierDispatchMiddleware(agent_config_dict))
 
+    # User-memory injection — main agent only. Reads the workspace's
+    # persisted memory file (written by the onboarding write_memory tool)
+    # and appends it to the system message every turn.
+    if agent_cfg.name == "main" and resource is not None:
+        from internagents.user_memory_middleware import UserMemoryMiddleware
+        middleware.append(UserMemoryMiddleware(resource=resource))
+
     # Always add compatibility and budget middlewares for all agents
     middleware.append(ImageContentCompatibilityMiddleware())
     middleware.append(WebSearchBudgetMiddleware())

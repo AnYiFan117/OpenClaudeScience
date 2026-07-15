@@ -97,6 +97,41 @@ def mark_workspace_onboarded(resource_id: str = "local") -> str:
     return f"onboarded ({workspace_id[:8]})"
 
 
+@tool("write_memory")
+def write_memory(content: str, resource_id: str = "local") -> str:
+    """Persist a concise user-context summary to workspace-scoped memory.
+
+    The content is written as a full-overwrite markdown file at
+    `.internagents/user-memory/<workspace_id>.md`, relative to the workspace
+    root. Every future run of the main agent in this workspace will see
+    this memory as a system-level context injection, so it should read
+    like durable notes about the user — their focus area, workflow stage,
+    tools, and goals — NOT the transient details of one conversation.
+
+    Call this once per onboarding conversation, right before
+    `mark_workspace_onboarded`. Overwrites any previous memory for this
+    workspace — pass the full desired content each time.
+
+    Args:
+        content: Markdown text summarizing the user's context. Keep it
+            short (a handful of bullet points).
+        resource_id: Resource identifier (usually "local"). Defaults to "local".
+
+    Returns:
+        A short status string suitable for the LLM to acknowledge.
+    """
+    from pathlib import Path
+
+    from internagents.frame_service import _workspace_id_from_resource
+
+    workspace_id = _workspace_id_from_resource(resource_id)
+    memory_dir = Path.cwd() / ".internagents" / "user-memory"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    memory_file = memory_dir / f"{workspace_id}.md"
+    memory_file.write_text(content.strip() + "\n", encoding="utf-8")
+    return f"memory saved ({workspace_id[:8]}, {len(content)} chars)"
+
+
 def interaction_tools() -> list[Any]:
     """Return the LangChain tools this module exports."""
-    return [ask_user, mark_workspace_onboarded]
+    return [ask_user, mark_workspace_onboarded, write_memory]

@@ -337,7 +337,7 @@ class ThreadSkillMiddleware(AgentMiddleware):
         self._catalog_roots = tuple(catalog_roots)
         self._prompt = SkillsMiddleware(
             backend=self.backend,
-            sources=[("skill://", self.label)],
+            sources=[(str(root), self.label) for root in self._catalog_roots],
         )
 
     def _get_backend(self, state: dict[str, Any], runtime: Any) -> BackendProtocol:
@@ -444,7 +444,11 @@ class ThreadSkillMiddleware(AgentMiddleware):
                 errors.append(f"Cannot parse skill metadata from {skill_md_path}.")
                 continue
             metadata = dict(metadata)
-            metadata["path"] = f"skill://{metadata['name']}/SKILL.md"
+            # Emit the real absolute path to SKILL.md so the model can use it
+            # directly with `read_file` / shell tools — no `skill://` URI, no
+            # sandbox translation.
+            metadata["path"] = skill_md_path
+            metadata["directory"] = skill_dir.as_posix()
             loaded[metadata["name"]] = metadata
 
         return list(loaded.values()), errors

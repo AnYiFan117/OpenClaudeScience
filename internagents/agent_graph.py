@@ -635,56 +635,6 @@ def _skill_source_paths(skills: list[Any] | None) -> list[Path]:
     return paths
 
 
-def _skill_read_only_roots(
-    config: dict[str, Any],
-    skills: list[Any] | None,
-) -> list[Path]:
-    roots = _skill_source_paths(skills)
-    skills_config = config.get("skills")
-
-    if isinstance(skills_config, list):
-        roots.extend(_skill_source_paths(_normalize_skill_sources(skills_config)))
-    elif isinstance(skills_config, dict):
-        roots.extend(
-            _skill_source_paths(_normalize_skill_sources(skills_config.get("sources")))
-        )
-
-        selected = skills_config.get("selected")
-        if isinstance(selected, list):
-            roots.extend(
-                _resolve_config_path(source, ROOT_DIR).resolve()
-                for source in selected
-                if isinstance(source, str) and source.strip()
-            )
-
-        catalog_paths = (
-            skills_config.get("catalog_paths")
-            or skills_config.get("catalogPaths")
-            or []
-        )
-        if not isinstance(catalog_paths, list) or not catalog_paths:
-            catalog_paths = DEFAULT_SKILL_CATALOG_PATHS
-        roots.extend(
-            _resolve_config_path(source, ROOT_DIR).resolve()
-            for source in catalog_paths
-            if isinstance(source, str) and source.strip()
-        )
-    else:
-        roots.extend(
-            _resolve_config_path(source, ROOT_DIR).resolve()
-            for source in DEFAULT_SKILL_CATALOG_PATHS
-        )
-
-    deduped: list[Path] = []
-    seen: set[str] = set()
-    for root in roots:
-        key = str(root)
-        if key not in seen:
-            seen.add(key)
-            deduped.append(root)
-    return deduped
-
-
 def _thread_skill_catalog_paths(config: dict[str, Any]) -> list[str]:
     skills_config = config.get("skills")
     raw_paths: Any = None
@@ -767,15 +717,14 @@ def _agent_system_prompt(base_prompt: str, agent_config: dict[str, Any]) -> str:
 
 def _logical_path_prompt() -> str:
     return (
-        "Paths shown to you are logical workspace paths. Use '/file.py' or "
-        "'/src/file.py' with filesystem tools. Shell commands run with the "
-        "workspace as the current directory, so prefer relative paths such as "
-        "'python3 script.py', './data/input.docx', or 'data/input.docx'. When "
-        "writing code or scripts, do not hard-code logical paths like '/file.py'; "
-        "inside Python/Node/etc. those mean the host filesystem root. Use relative "
-        "paths or build paths from the current working directory. Use "
-        "'skill://<skill>/SKILL.md' or 'skill://<skill>/scripts/...' for active "
-        "skill files; skills are read-only."
+        "You are running against the deployment machine's real filesystem — "
+        "paths shown to you are real host paths. Shell commands start with "
+        "the workspace as the current directory; prefer workspace-relative "
+        "paths such as 'python3 script.py' or './data/input.docx' for files "
+        "inside the workspace. Use real absolute paths for anything outside "
+        "the workspace (e.g. active skills at '~/.internagents/myskills/<name>/'). "
+        "Filesystem tools also accept real absolute or relative paths — no "
+        "virtual '/output/…' scheme."
     )
 
 
@@ -784,13 +733,13 @@ def _office_attachment_prompt() -> str:
         "For Office attachments (.doc, .docx, .xls, .xlsx, .ppt, .pptx), "
         "do not use read_file on the original Office file as the first step; "
         "it is a binary/container file. First read the readable summary path "
-        "shown in the attachment, such as readable_logical_path or "
-        "extractedWorkspacePath. Also read the matching skill before editing "
-        "or extracting beyond the summary: Word files use "
-        "'skill://docx/SKILL.md', Excel files use 'skill://xlsx/SKILL.md', "
-        "and PowerPoint files use 'skill://pptx/SKILL.md'. Use the original "
-        "Office file only when layout, images, formulas, or document editing "
-        "requires it, and then follow the corresponding skill workflow."
+        "shown in the attachment (e.g. readable_logical_path, "
+        "extracted_workspace_path, or the equivalent real path). Also read "
+        "the matching skill's SKILL.md before editing or extracting beyond "
+        "the summary — active skill directories live under "
+        "~/.internagents/myskills/<name>/. Use the original Office file only "
+        "when layout, images, formulas, or document editing requires it, and "
+        "then follow the corresponding skill workflow."
     )
 
 
@@ -806,7 +755,6 @@ def _remote_workspace_path_prompt() -> str:
 
 def _create_backend_for_resource(
     resource: ResourceConfig,
-    read_only_roots: list[Path] | None = None,
 ):  # noqa: ANN201
     if resource.backend == "local_shell":
         return DynamicLocalShellBackend(
@@ -816,7 +764,6 @@ def _create_backend_for_resource(
             timeout=resource.timeout,
             max_output_bytes=resource.max_output_bytes,
             workspace_override=resource.workspace,
-            read_only_roots=read_only_roots,
             active_skills_path=ROOT_DIR / ".internagents" / "active-skills",
         )
     if resource.backend == "ssh_shell":
@@ -832,7 +779,6 @@ def _create_backend_for_resource(
 def _create_runtime_backend(  # noqa: ANN201
     config: dict[str, Any],
     resource: ResourceConfig | None = None,
-    read_only_roots: list[Path] | None = None,
 ):
     backend_config = config.get("backend") or {}
     backend_type = backend_config.get("type", "local_shell")
@@ -846,10 +792,8 @@ def _create_runtime_backend(  # noqa: ANN201
             resource_id=resource.id,
             fallback_root=ROOT_DIR,
             inherit_env=backend_config.get("inherit_env", True),
-            virtual_mode=True,
             timeout=resource.timeout,
             max_output_bytes=resource.max_output_bytes,
-            read_only_roots=read_only_roots,
             active_skills_path=ROOT_DIR / ".internagents" / "active-skills",
         )
 
@@ -862,7 +806,7 @@ def _create_runtime_backend(  # noqa: ANN201
     return LocalShellBackend(
         root_dir=root_dir,
         inherit_env=backend_config.get("inherit_env", True),
-        virtual_mode=backend_config.get("virtual_mode", False),
+        virtual_mode=False,
         timeout=resource.timeout
         if resource is not None
         else backend_config.get("timeout", 120),
@@ -890,7 +834,7 @@ def _resource_system_prompt(base_prompt: str, resource: ResourceConfig) -> str:
         "You are running in a resource-bound 天玄·千枢科学发现平台 session.\n"
         f"Resource id: {resource.id}\n"
         f"Resource label: {resource.label}\n"
-        "Workspace logical root: /\n"
+        f"Workspace directory: {resource.workspace}\n"
         f"{kb_line}\n"
         "Do not change server network settings, firewall settings, SSH daemon settings, or cloud security-group settings. "
         "If such a change seems necessary, stop and ask the user. "
@@ -1650,10 +1594,7 @@ def _build_agent_graph_for(
     resolved_skills = _resolve_skills(agent_config)
 
     # Create backend
-    backend = _create_backend_for_resource(
-        resource,
-        read_only_roots=_skill_read_only_roots(agent_config, resolved_skills),
-    )
+    backend = _create_backend_for_resource(resource)
 
     # Get all tools and filter by agent config
     all_tools = _resolve_tools(agent_config)
@@ -1798,10 +1739,7 @@ def create_agent_for_resource(resource: ResourceConfig):  # noqa: ANN201
         ),
     )
     resolved_skills = _resolve_skills(agent_config)
-    backend = _create_backend_for_resource(
-        resource,
-        read_only_roots=_skill_read_only_roots(agent_config, resolved_skills),
-    )
+    backend = _create_backend_for_resource(resource)
     middleware = list(agent_config.get("middleware") or [])
     from internagents.cancel_middleware import CancelBridgeMiddleware
     middleware.append(CancelBridgeMiddleware())
@@ -1855,11 +1793,7 @@ def create_runtime_agent():  # noqa: ANN201
         runtime_resource = None
 
     resolved_skills = _resolve_skills(agent_config)
-    backend = _create_runtime_backend(
-        agent_config,
-        runtime_resource,
-        read_only_roots=_skill_read_only_roots(agent_config, resolved_skills),
-    )
+    backend = _create_runtime_backend(agent_config, runtime_resource)
 
     # Load agent-specific system prompt if not "main"
     if runtime_agent_name == "main":
@@ -1893,7 +1827,7 @@ def create_runtime_agent():  # noqa: ANN201
         )
         system_prompt += (
             f"\nConfigured resource id: {runtime_resource.id}\n"
-            "Configured workspace logical root: /\n"
+            f"Configured workspace directory: {runtime_resource.workspace}\n"
             "For local resources, the active workspace can be hot-switched from the UI; "
             "filesystem and shell tools use the selected run workspace when provided, "
             "and fall back to the latest resource workspace. "

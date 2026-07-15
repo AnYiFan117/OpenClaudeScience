@@ -1,111 +1,96 @@
+"""Smoke tests for the simplified DynamicLocalShellBackend passthrough."""
+
+import os
 import tempfile
 import unittest
 from pathlib import Path
 import sys
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-BUNDLED_DEEPAGENTS = ROOT_DIR / "deepagents" / "libs" / "deepagents"
-if BUNDLED_DEEPAGENTS.exists():
-    sys.path.insert(0, str(BUNDLED_DEEPAGENTS))
+sys.path.insert(0, str(ROOT_DIR))
 
-from langchain.tools import ToolRuntime
-
-from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemState
 from internagents.dynamic_local_backend import DynamicLocalShellBackend
 
 
-class DynamicLocalShellBackendTest(unittest.TestCase):
+class DynamicLocalShellBackendPassthroughTest(unittest.TestCase):
     def _backend(
         self,
         workspace: Path,
         *,
-        read_only_roots: list[Path] | None = None,
+        active_skills_path: Path | None = None,
     ) -> DynamicLocalShellBackend:
         return DynamicLocalShellBackend(
             resource_id="local",
             fallback_root=workspace,
             workspace_override=str(workspace),
-            read_only_roots=read_only_roots,
+            active_skills_path=active_skills_path,
         )
 
-    def _write_docx_skill(self, root: Path) -> Path:
-        skill_dir = root / "skills" / "docx"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("---\nname: docx\n---\n", encoding="utf-8")
-        return root / "skills"
-
-    def test_outside_read_path_guides_model_to_tool_and_script_paths(self) -> None:
+    def test_workspace_absolute_path_reads_actual_file(self) -> None:
+        """A real absolute path pointing inside the workspace must resolve to
+        the actual file — no `mg/mnt/...` nested-dir pollution like the
+        removed translator produced."""
         with tempfile.TemporaryDirectory() as tmp:
-            result = self._backend(Path(tmp)).read("/tmp/outside.txt")
+            root = Path(tmp).resolve()
+            (root / "output").mkdir()
+            target = root / "output" / "hello.txt"
+            target.write_text("hi\n", encoding="utf-8")
 
-        self.assertIsNotNone(result.error)
-        self.assertIn("For filesystem tools", result.error)
-        self.assertIn("'/document.docx'", result.error)
-        self.assertIn("'/scripts/process.py'", result.error)
-        self.assertIn("'skill://docx/SKILL.md'", result.error)
-        self.assertIn("writing code/scripts", result.error)
-        self.assertIn("'./scripts/process.py'", result.error)
+            backend = self._backend(root)
+            result = backend.read(str(target))
 
-    def test_outside_write_path_uses_same_model_guidance(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            result = self._backend(Path(tmp)).write("/tmp/outside.txt", "content")
-
-        self.assertIsNotNone(result.error)
-        self.assertIn("For filesystem tools", result.error)
-        self.assertIn("writing code/scripts", result.error)
-
-    def test_validated_skill_uri_reads_from_read_only_skill_catalog(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            skill_root = self._write_docx_skill(root)
-            backend = self._backend(root, read_only_roots=[skill_root])
-
-            result = backend.read("/skill:/docx/SKILL.md")
-
-        self.assertIsNone(result.error)
+        self.assertIsNone(result.error, f"Unexpected error: {result.error}")
         self.assertIsNotNone(result.file_data)
-        self.assertIn("name: docx", result.file_data["content"])
+        self.assertIn("hi", result.file_data["content"])
 
-    def test_validated_skill_uri_remains_read_only(self) -> None:
+    def test_shell_execute_uses_workspace_as_cwd(self) -> None:
+        """Shell commands should start with the workspace as CWD, so `pwd`
+        prints the workspace directory (not something virtual)."""
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            skill_root = self._write_docx_skill(root)
-            backend = self._backend(root, read_only_roots=[skill_root])
+            root = Path(tmp).resolve()
+            backend = self._backend(root)
+            result = backend.execute("pwd")
 
-            write_result = backend.write("/skill:/docx/SKILL.md", "changed")
-            edit_result = backend.edit("/skill:/docx/SKILL.md", "docx", "pdf")
+        self.assertIn(str(root), result.output or "")
 
-        self.assertIsNotNone(write_result.error)
-        self.assertIn("Skills are read-only", write_result.error)
-        self.assertIsNotNone(edit_result.error)
-        self.assertIn("Skills are read-only", edit_result.error)
-
-    def test_filesystem_middleware_skill_uri_read_reaches_dynamic_backend(self) -> None:
+    def test_active_skills_prepended_to_pythonpath(self) -> None:
+        """When `active_skills_path` holds a valid skill dir, the shell env's
+        PYTHONPATH should be prefixed with it so `import <module>` works."""
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            skill_root = self._write_docx_skill(root)
-            backend = self._backend(root, read_only_roots=[skill_root])
-            middleware = FilesystemMiddleware(backend=backend)
-            read_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
-            runtime = ToolRuntime(
-                state=FilesystemState(messages=[], files={}),
-                context=None,
-                tool_call_id="skill-read",
-                store=None,
-                stream_writer=lambda _: None,
-                config={},
+            root = Path(tmp).resolve()
+            active_skills = root / ".internagents" / "active-skills"
+            active_skills.mkdir(parents=True)
+
+            skill_dir = active_skills / "demo-skill"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: demo-skill\n---\n", encoding="utf-8"
+            )
+            (skill_dir / "kernel.py").write_text(
+                "MAGIC = 'skill_visible'\n", encoding="utf-8"
             )
 
-            result = read_tool.invoke(
-                {
-                    "file_path": "skill://docx/SKILL.md",
-                    "limit": 1000,
-                    "runtime": runtime,
-                }
-            )
+            backend = self._backend(root, active_skills_path=active_skills)
+            result = backend.execute("python3 -c 'import kernel; print(kernel.MAGIC)'")
 
-        self.assertEqual(result.status, "success")
-        self.assertIn("name: docx", result.content)
+        self.assertIn("skill_visible", result.output or "")
+
+    def test_no_forbidden_workspace_pollution(self) -> None:
+        """After executing a command that references an absolute host path
+        inside the workspace, the workspace must NOT contain the mirrored
+        `mnt/...` / `root/...` tree that the old translator created."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            (root / "output").mkdir()
+            (root / "output" / "x.txt").write_text("x", encoding="utf-8")
+
+            backend = self._backend(root)
+            backend.execute(f"cat {root / 'output' / 'x.txt'}")
+
+            # The workspace root should have exactly one child ("output"),
+            # not a mirrored `<parts of the absolute path>` tree.
+            children = {p.name for p in root.iterdir()}
+        self.assertEqual(children, {"output"})
 
 
 if __name__ == "__main__":

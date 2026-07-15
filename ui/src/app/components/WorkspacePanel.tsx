@@ -26,7 +26,6 @@ interface WorkspacePanelProps {
   onNewThread?: () => void;
   onMutateReady?: (mutate: () => void) => void;
   resourceId?: string;
-  runtimeUrl?: string;
   assistantId?: string;
   workspaceId?: string;
   workspaceRefreshKey?: number;
@@ -41,7 +40,6 @@ export function WorkspacePanel({
   onNewThread,
   onMutateReady,
   resourceId,
-  runtimeUrl,
   assistantId,
   workspaceId,
   workspaceRefreshKey,
@@ -79,7 +77,6 @@ export function WorkspacePanel({
       onMutateReady={onMutateReady}
       onCollapse={() => setThreadsCollapsed(true)}
       resourceId={resourceId}
-      runtimeUrl={runtimeUrl}
       assistantId={assistantId}
       workspaceId={workspaceId}
     />

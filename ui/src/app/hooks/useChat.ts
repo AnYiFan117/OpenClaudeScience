@@ -3,12 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStream } from "@langchain/langgraph-sdk/react";
 import {
-  Client,
   type Message,
   type Assistant,
   type Checkpoint,
-  type Run,
-  type StreamMode,
   type Thread,
   type ThreadState,
 } from "@langchain/langgraph-sdk";
@@ -22,7 +19,6 @@ import type {
   TodoItem,
 } from "@/app/types/types";
 import type { StreamConfig } from "@/lib/config";
-import type { RemoteAgentStreamEvent } from "@/lib/remote-agent";
 import { useRemoteAgent } from "@/providers/ClientProvider";
 import { useQueryState } from "nuqs";
 import { useStreamEventLayer } from "@/app/hooks/useStreamEventLayer";
@@ -64,12 +60,6 @@ type RunLifecycle = {
   runId?: string;
   threadId?: string;
 };
-type RuntimeRunSnapshot = {
-  runId?: string;
-  status?: string;
-  createdAt?: string;
-  updatedAt?: string;
-};
 export type ThreadRecoveryNotice =
   | {
       kind: "failed_run_input";
@@ -93,7 +83,6 @@ const THREAD_RECOVERY_FAILED_RUN_INPUT = "failed_run_input";
 const STREAM_RECOVERY_VISIBLE_DELAY_MS = 700;
 const STALE_ACTIVE_RUN_MS = 10 * 60 * 1000;
 const ACTIVE_RUN_STATUSES = new Set(["busy", "pending", "running"]);
-const RUNTIME_STREAM_ACTIVE_RUN_STATUSES = new Set(["pending", "running"]);
 
 type ThreadSnapshotCacheEntry = {
   data?: ThreadState<StateType>[];
@@ -120,6 +109,11 @@ export type StateType = {
   // Reviewer subgraph findings — see internagents/verifier_dispatch_middleware.py.
   // Written by VerifierDispatchMiddleware.aafter_model; NEVER touches messages.
   reviews?: ReviewEntry[];
+  // Context-window telemetry — written by FrameContextMiddleware.after_model.
+  // `contextWindow` is the total input tokens the model accepts;
+  // `contextTokensUsed` is the input tokens the last model call used.
+  contextWindow?: number;
+  contextTokensUsed?: number;
 };
 
 type LangGraphContentBlock =
@@ -128,208 +122,6 @@ type LangGraphContentBlock =
       type: "image_url";
       image_url: string | { url: string; detail?: "auto" | "low" | "high" };
     };
-
-function splitStreamEventName(rawEvent: string): {
-  mode: string;
-  namespace?: string[];
-} {
-  const [mode, ...namespace] = rawEvent.split("|");
-  return {
-    mode,
-    namespace: namespace.length > 0 ? namespace : undefined,
-  };
-}
-
-function isAbortError(error: unknown): boolean {
-  return (
-    (error instanceof DOMException && error.name === "AbortError") ||
-    (error instanceof Error && error.name === "AbortError")
-  );
-}
-
-function latestActiveRuntimeRun(runs: Run[]): Run | undefined {
-  return runs.find((run) =>
-    RUNTIME_STREAM_ACTIVE_RUN_STATUSES.has(run.status)
-  );
-}
-
-function useRuntimeLiveStream({
-  runtimeClient,
-  threadId,
-  enabled,
-  streamMode,
-  appendStreamEvent,
-  onEvent,
-  onSettled,
-}: {
-  runtimeClient: Client<StateType> | null;
-  threadId: string | null;
-  enabled: boolean;
-  streamMode?: StreamMode | StreamMode[];
-  appendStreamEvent: (event: RemoteAgentStreamEvent) => void;
-  onEvent: () => void;
-  onSettled: () => void;
-}) {
-  const lastEventIdsRef = useRef(new Map<string, string>());
-
-  useEffect(() => {
-    if (!enabled || !runtimeClient || !threadId) {
-      return;
-    }
-
-    let cancelled = false;
-    let retryTimerId: number | null = null;
-    let eventSequence = 0;
-    let controller: AbortController | null = null;
-
-    const clearRetryTimer = () => {
-      if (retryTimerId === null) return;
-      window.clearTimeout(retryTimerId);
-      retryTimerId = null;
-    };
-
-    const scheduleJoin = (delayMs: number) => {
-      if (cancelled) return;
-      clearRetryTimer();
-      retryTimerId = window.setTimeout(() => {
-        retryTimerId = null;
-        void joinLatestRuntimeRun();
-      }, delayMs);
-    };
-
-    const joinLatestRuntimeRun = async () => {
-      try {
-        const runs = await runtimeClient.runs.list(threadId, { limit: 10 });
-        if (cancelled) return;
-
-        const activeRun = latestActiveRuntimeRun(runs);
-        if (!activeRun) {
-          onSettled();
-          scheduleJoin(1_000);
-          return;
-        }
-
-        const runId = activeRun.run_id;
-        const lastEventId = lastEventIdsRef.current.get(runId) ?? "-1";
-        controller = new AbortController();
-
-        for await (const event of runtimeClient.runs.joinStream(
-          threadId,
-          runId,
-          {
-            signal: controller.signal,
-            lastEventId,
-            streamMode,
-          }
-        )) {
-          if (cancelled) return;
-
-          const rawEvent = String(event.event);
-          const { mode, namespace } = splitStreamEventName(rawEvent);
-          const eventId =
-            event.id ?? `${Date.now()}-${eventSequence++}`;
-          if (event.id) {
-            lastEventIdsRef.current.set(runId, event.id);
-          }
-
-          appendStreamEvent({
-            id: `runtime:${runId}:${eventId}`,
-            at: Date.now(),
-            threadId,
-            rawEvent,
-            mode,
-            namespace: ["remote_runtime_direct", ...(namespace ?? [])],
-            data: event.data,
-          });
-          onEvent();
-        }
-
-        onSettled();
-        scheduleJoin(1_000);
-      } catch (error) {
-        if (cancelled || isAbortError(error)) {
-          return;
-        }
-        console.warn("Runtime live stream failed; falling back to snapshot polling", error);
-        scheduleJoin(2_000);
-      }
-    };
-
-    void joinLatestRuntimeRun();
-
-    return () => {
-      cancelled = true;
-      clearRetryTimer();
-      controller?.abort();
-    };
-  }, [
-    appendStreamEvent,
-    enabled,
-    onEvent,
-    onSettled,
-    runtimeClient,
-    streamMode,
-    threadId,
-  ]);
-}
-
-function runtimeRunSnapshot(run?: Run): RuntimeRunSnapshot | null {
-  if (!run) {
-    return null;
-  }
-  return {
-    runId: run.run_id,
-    status: run.status,
-    createdAt: run.created_at,
-    updatedAt: run.updated_at,
-  };
-}
-
-function useRuntimeRunSnapshot({
-  runtimeClient,
-  threadId,
-  enabled,
-}: {
-  runtimeClient: Client<StateType> | null;
-  threadId: string | null;
-  enabled: boolean;
-}): RuntimeRunSnapshot | null {
-  const [snapshot, setSnapshot] = useState<RuntimeRunSnapshot | null>(null);
-
-  useEffect(() => {
-    if (!enabled || !runtimeClient || !threadId) {
-      setSnapshot(null);
-      return;
-    }
-
-    let cancelled = false;
-
-    const refresh = async () => {
-      try {
-        const runs = await runtimeClient.runs.list(threadId, { limit: 10 });
-        if (cancelled) {
-          return;
-        }
-        const activeRun = latestActiveRuntimeRun(runs);
-        setSnapshot(runtimeRunSnapshot(activeRun ?? runs[0]));
-      } catch {
-        if (!cancelled) {
-          setSnapshot(null);
-        }
-      }
-    };
-
-    void refresh();
-    const intervalId = window.setInterval(refresh, 2500);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-    };
-  }, [enabled, runtimeClient, threadId]);
-
-  return snapshot;
-}
 
 function threadToState(
   threadId: string,
@@ -790,11 +582,9 @@ function useDelayedBoolean(value: boolean, delayMs: number): boolean {
 
 async function loadThreadSnapshot({
   client,
-  runtimeClient,
   threadId,
 }: {
   client: ReturnType<typeof useRemoteAgent>["client"];
-  runtimeClient: Client<StateType> | null;
   threadId: string;
 }): Promise<ThreadState<StateType>[]> {
   let primaryState: ThreadState<StateType> | null = null;
@@ -849,71 +639,9 @@ async function loadThreadSnapshot({
     return [sanitizeThreadState(primaryState)];
   }
 
-  const pendingRunPreview =
-    (await loadPendingRunInputPreview(client, threadId)) ??
-    (runtimeClient
-      ? await loadPendingRunInputPreview(runtimeClient, threadId)
-      : null);
+  const pendingRunPreview = await loadPendingRunInputPreview(client, threadId);
   if (pendingRunPreview?.status === "error") {
     return [mergePendingRunState(threadId, primaryState, pendingRunPreview)];
-  }
-
-  if (!pendingRunPreview && stateHasMessages(primaryState)) {
-    return [sanitizeThreadState(primaryState)];
-  }
-
-  const hasTrustedPrimaryMessages = () =>
-    hasMainStateMessages && stateHasMessages(primaryState);
-  const mergeRuntimeState = (runtimeState: ThreadState<StateType>) => {
-    const mergedState = primaryState
-      ? mergeStateSnapshot(primaryState, runtimeState, {
-          preservePrimaryMessages: hasTrustedPrimaryMessages(),
-        })
-      : sanitizeThreadState(runtimeState);
-    return pendingRunPreview
-      ? attachPendingRunMetadata(threadId, mergedState, pendingRunPreview)
-      : mergedState;
-  };
-
-  if (runtimeClient) {
-    try {
-      const runtimeState = sanitizeThreadState(
-        await runtimeClient.threads.getState<StateType>(threadId)
-      );
-      if (stateHasMessages(runtimeState)) {
-        return [mergeRuntimeState(runtimeState)];
-      }
-      if (!primaryState) {
-        primaryState = runtimeState;
-      }
-    } catch {
-      // Runtime may not have a materialized state for queued main-service runs.
-    }
-
-    try {
-      const runtimeThread = await runtimeClient.threads.get<StateType>(
-        threadId
-      );
-      const runtimeState = threadToState(threadId, runtimeThread);
-      if (stateHasMessages(runtimeState)) {
-        return [mergeRuntimeState(runtimeState)];
-      }
-    } catch {
-      // Runtime may not know about every main-service thread.
-    }
-
-    try {
-      const runtimeHistory = await runtimeClient.threads.getHistory<StateType>(
-        threadId,
-        { limit: 80 }
-      );
-      const runtimeStateWithMessages = findStateWithMessages(runtimeHistory);
-      if (runtimeStateWithMessages) {
-        return [mergeRuntimeState(runtimeStateWithMessages)];
-      }
-    } catch {
-      // Keep the primary snapshot below if runtime history is unavailable.
-    }
   }
 
   if (pendingRunPreview) {
@@ -932,13 +660,11 @@ async function loadThreadSnapshot({
 
 function useThreadSnapshot({
   client,
-  runtimeClient,
   threadId,
   externalThread,
   cacheScope,
 }: {
   client: ReturnType<typeof useRemoteAgent>["client"];
-  runtimeClient: Client<StateType> | null;
   threadId: string | null;
   externalThread?: UseStreamThread<StateType>;
   cacheScope: string;
@@ -1011,7 +737,6 @@ function useThreadSnapshot({
         } else {
           pending = loadThreadSnapshot({
             client,
-            runtimeClient,
             threadId: targetThreadId,
           });
           cacheRequestId = ++threadSnapshotRequestSequence;
@@ -1061,7 +786,7 @@ function useThreadSnapshot({
         }
       }
     },
-    [cacheScope, client, runtimeClient, threadId]
+    [cacheScope, client, threadId]
   );
 
   useEffect(() => {
@@ -1396,7 +1121,6 @@ export function useChat({
   thread,
   resourceId,
   resourceLabel,
-  runtimeUrl,
   workspaceId,
   workspacePath,
   workspaceLabel,
@@ -1408,7 +1132,6 @@ export function useChat({
   thread?: UseStreamThread<StateType>;
   resourceId?: string;
   resourceLabel?: string;
-  runtimeUrl?: string;
   workspaceId?: string;
   workspacePath?: string;
   workspaceLabel?: string;
@@ -1430,19 +1153,8 @@ export function useChat({
   const previousThreadIdRef = useRef<string | null>(threadId ?? null);
   const pendingNewThreadTitleRef = useRef<string | null>(null);
   const pendingNewThreadTitleThreadIdRef = useRef<string | null>(null);
-  const runtimeStreamRefreshTimerRef = useRef<number | null>(null);
   const remoteAgent = useRemoteAgent();
   const client = remoteAgent.client;
-  const runtimeClient = useMemo(
-    () =>
-      runtimeUrl
-        ? new Client<StateType>({
-            apiUrl: runtimeUrl,
-            defaultHeaders: { "Content-Type": "application/json" },
-          })
-        : null,
-    [runtimeUrl]
-  );
   const streamEventLayer = useStreamEventLayer(remoteAgent, threadId ?? null);
   const { clearStreamEvents } = streamEventLayer;
   const threadSnapshotCacheScope = useMemo(
@@ -1450,11 +1162,10 @@ export function useChat({
       [
         remoteAgent.url,
         remoteAgent.graphName,
-        runtimeUrl || "",
         resourceId || "",
         workspaceId || "",
       ].join("|"),
-    [remoteAgent.graphName, remoteAgent.url, resourceId, runtimeUrl, workspaceId]
+    [remoteAgent.graphName, remoteAgent.url, resourceId, workspaceId]
   );
   const markRunStarting = useCallback(() => {
     setVisibleError(undefined);
@@ -1466,15 +1177,9 @@ export function useChat({
   }, []);
   const threadSnapshot = useThreadSnapshot({
     client,
-    runtimeClient,
     threadId: threadId ?? null,
     externalThread: thread,
     cacheScope: threadSnapshotCacheScope,
-  });
-  const runtimeRunSnapshot = useRuntimeRunSnapshot({
-    runtimeClient,
-    threadId: threadId ?? null,
-    enabled: Boolean(threadId && runtimeClient),
   });
   const threadMetadata = useMemo(() => {
     const metadata = threadSnapshot?.data?.[0]?.metadata;
@@ -1492,10 +1197,7 @@ export function useChat({
       : null;
   const detectedActiveRun =
     (threadStatus ? ACTIVE_RUN_STATUSES.has(threadStatus) : false) ||
-    (pendingRunStatus ? ACTIVE_RUN_STATUSES.has(pendingRunStatus) : false) ||
-    (runtimeRunSnapshot?.status
-      ? ACTIVE_RUN_STATUSES.has(runtimeRunSnapshot.status)
-      : false);
+    (pendingRunStatus ? ACTIVE_RUN_STATUSES.has(pendingRunStatus) : false);
   const snapshotHasActiveRun =
     runLifecycle.status !== "stopped" && detectedActiveRun;
   const snapshotHasSettledRunState =
@@ -1667,59 +1369,6 @@ export function useChat({
       snapshotHasActiveRun);
 
   const mutateThreadSnapshot = threadSnapshot?.mutate;
-
-  const refreshThreadSnapshotNow = useCallback(() => {
-    if (!threadId || !mutateThreadSnapshot) {
-      return;
-    }
-    if (runtimeStreamRefreshTimerRef.current !== null) {
-      window.clearTimeout(runtimeStreamRefreshTimerRef.current);
-      runtimeStreamRefreshTimerRef.current = null;
-    }
-    void mutateThreadSnapshot(threadId).catch(() => undefined);
-  }, [mutateThreadSnapshot, threadId]);
-
-  const refreshThreadSnapshotSoon = useCallback(() => {
-    if (!threadId || !mutateThreadSnapshot) {
-      return;
-    }
-    if (runtimeStreamRefreshTimerRef.current !== null) {
-      return;
-    }
-    runtimeStreamRefreshTimerRef.current = window.setTimeout(() => {
-      runtimeStreamRefreshTimerRef.current = null;
-      void mutateThreadSnapshot(threadId).catch(() => undefined);
-    }, 500);
-  }, [mutateThreadSnapshot, threadId]);
-
-  useEffect(() => {
-    return () => {
-      if (runtimeStreamRefreshTimerRef.current === null) {
-        return;
-      }
-      window.clearTimeout(runtimeStreamRefreshTimerRef.current);
-      runtimeStreamRefreshTimerRef.current = null;
-    };
-  }, [threadId]);
-
-  const shouldSubscribeRuntimeLiveStream =
-    Boolean(threadId) &&
-    Boolean(runtimeClient) &&
-    runLifecycle.status !== "stopped" &&
-    (stream.isLoading ||
-      localRunInFlight ||
-      runLifecycle.status === "running" ||
-      snapshotHasActiveRun);
-
-  useRuntimeLiveStream({
-    runtimeClient,
-    threadId: threadId ?? null,
-    enabled: shouldSubscribeRuntimeLiveStream,
-    streamMode: streamSubmitOptions.streamMode,
-    appendStreamEvent: streamEventLayer.appendStreamEvent,
-    onEvent: refreshThreadSnapshotSoon,
-    onSettled: refreshThreadSnapshotNow,
-  });
 
   useEffect(() => {
     if (!shouldPollThreadSnapshot || !mutateThreadSnapshot || !threadId) {
@@ -2352,21 +2001,10 @@ export function useChat({
     const hasNonHumanProgress = scopedMessages.some(
       (message) => message.type !== "human"
     );
-    const runtimeRunUpdatedAt = runtimeRunSnapshot?.updatedAt
-      ? Date.parse(runtimeRunSnapshot.updatedAt)
-      : NaN;
     const threadUpdatedAt =
       typeof threadMetadata[THREAD_UPDATED_AT_METADATA_KEY] === "string"
         ? Date.parse(threadMetadata[THREAD_UPDATED_AT_METADATA_KEY])
         : NaN;
-    const hasStaleRuntimeRun =
-      snapshotHasActiveRun &&
-      runtimeRunSnapshot?.status &&
-      ACTIVE_RUN_STATUSES.has(runtimeRunSnapshot.status) &&
-      Number.isFinite(runtimeRunUpdatedAt) &&
-      Date.now() - runtimeRunUpdatedAt >= STALE_ACTIVE_RUN_MS &&
-      hasHumanMessage &&
-      !hasNonHumanProgress;
     const hasStaleCoordinatorThread =
       snapshotHasActiveRun &&
       threadStatus &&
@@ -2376,16 +2014,14 @@ export function useChat({
       hasHumanMessage &&
       !hasNonHumanProgress;
 
-    if ((hasStaleRuntimeRun || hasStaleCoordinatorThread) && !visibleInterrupt) {
+    if (hasStaleCoordinatorThread && !visibleInterrupt) {
       return {
         kind: "stale_active_run",
-        runId: runtimeRunSnapshot?.runId,
-        status: runtimeRunSnapshot?.status ?? threadStatus ?? undefined,
+        status: threadStatus ?? undefined,
         updatedAt:
-          runtimeRunSnapshot?.updatedAt ??
-          (typeof threadMetadata[THREAD_UPDATED_AT_METADATA_KEY] === "string"
+          typeof threadMetadata[THREAD_UPDATED_AT_METADATA_KEY] === "string"
             ? threadMetadata[THREAD_UPDATED_AT_METADATA_KEY]
-            : undefined),
+            : undefined,
       };
     }
 
@@ -2409,7 +2045,6 @@ export function useChat({
     isRunLoading,
     isThreadScopedStateLoading,
     pendingRunStatus,
-    runtimeRunSnapshot,
     scopedMessages,
     snapshotHasActiveRun,
     threadMetadata,
@@ -2426,6 +2061,8 @@ export function useChat({
     email: scopedValues.email,
     ui: scopedValues.ui,
     reviews: scopedValues.reviews ?? [],
+    contextWindow: scopedValues.contextWindow,
+    contextTokensUsed: scopedValues.contextTokensUsed,
     threadId,
     resourceId,
     workspaceId,

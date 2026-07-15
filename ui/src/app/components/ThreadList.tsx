@@ -142,7 +142,6 @@ interface ThreadListProps {
   onClose?: () => void;
   onCollapse?: () => void;
   resourceId?: string;
-  runtimeUrl?: string;
   assistantId?: string;
   workspaceId?: string;
 }
@@ -154,7 +153,6 @@ export function ThreadList({
   onClose,
   onCollapse,
   resourceId,
-  runtimeUrl,
   assistantId,
   workspaceId,
 }: ThreadListProps) {
@@ -168,7 +166,6 @@ export function ThreadList({
   const threads = useThreads({
     limit: 20,
     resourceId,
-    runtimeUrl,
     assistantId,
     workspaceId,
   });

@@ -248,7 +248,6 @@ function HomePageInner({
   const threadTabs = useThreads({
     limit: 20,
     resourceId: activeResource.id,
-    runtimeUrl: activeResource.runtimeUrl,
     assistantId: activeAssistantId,
     workspaceId: isActiveLocalResource ? activeWorkspace?.id : undefined,
   });
@@ -863,7 +862,6 @@ function HomePageInner({
               onGeneratedThreadId={handleGeneratedThreadId}
               resourceId={activeResource.id}
               resourceLabel={activeResource.label}
-              runtimeUrl={activeResource.runtimeUrl}
               workspaceId={
                 isActiveLocalResource ? activeWorkspace?.id : undefined
               }
@@ -1239,7 +1237,6 @@ function WorkbenchSidebar({
             onNewThread={onNewThread}
             onMutateReady={onMutateReady}
             resourceId={activeResource.id}
-            runtimeUrl={activeResource.runtimeUrl}
             assistantId={activeAssistantId}
             workspaceId={isActiveLocalResource ? activeWorkspace?.id : undefined}
           />

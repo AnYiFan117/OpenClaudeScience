@@ -1,12 +1,12 @@
-# InternAgentS Agent Guide
+# 天玄·千枢科学发现平台 Agent Guide
 
 本文件面向代码 Agent 和贡献者，只保留会影响正确性、安全性和维护边界的规则。长说明、背景分析和设计记录放到 `README.md` 或 `docs/`。
 
 ## 核心原则
 
-1. DeepAgents 是外部 SDK。InternAgentS 通过公开 API、backend adapter、middleware、tools 和资源配置扩展能力。
+1. DeepAgents 是外部 SDK。天玄·千枢科学发现平台 通过公开 API、backend adapter、middleware、tools 和资源配置扩展能力。
 2. 不要修改或提交本地 `deepagents/` checkout。若必须使用稳定性不明确的 DeepAgents/LangGraph 接口，只能集中在一个 adapter/provider 文件里，并在该处说明升级风险。
-3. 远程 Agent 服务和 SSH 计算资源是两类对象。前者是 UI 连接的已有 LangGraph/InternAgentS 服务；后者是 local backend 通过 SSH 控制的 workspace。
+3. 远程 Agent 服务和 SSH 计算资源是两类对象。前者是 UI 连接的已有 LangGraph/天玄·千枢科学发现平台 服务；后者是 local backend 通过 SSH 控制的 workspace。
 4. 跨进程、跨机器、跨 SDK 的协议逻辑不要塞进页面组件，也不要堆进 `agent.py` 的大分支；放到 adapter、service 或 API route。
 5. 配置和密钥默认本地化。仓库只提交安全默认值、示例和脱敏文档。
 
@@ -34,9 +34,9 @@
 
 ## Skill Catalogs
 
-- Skill catalog 是 InternAgentS 级共享能力，不只属于当前仓库。
+- Skill catalog 是 天玄·千枢科学发现平台 级共享能力，不只属于当前仓库。
 - 默认搜索顺序：`~/.internagents/myskills`、`~/.internagents/imported-skills`、`skills`、`.internagents/imported-skills`。
-- 本地或云端导入的技能默认复制到 `~/.internagents/imported-skills`，这样同一技能可以被多个 InternAgentS 项目复用。
+- 本地或云端导入的技能默认复制到 `~/.internagents/imported-skills`，这样同一技能可以被多个 天玄·千枢科学发现平台 项目复用。
 - `.internagents/imported-skills` 是项目内唯一允许作为预置技能分发的 `.internagents` 子目录；桌面打包会把这里的技能带进 runtime template。
 - 当前项目只保存选中的 skill 列表和 `.internagents/active-skills` 下的 active symlink/copy；active skills、logs、pids、uploads、LangGraph state 仍是本地运行态，不提交。
 - 技能配置写在 `deepagent.config.json` 的 `skills` 字段；改 catalog path、active path 或导入逻辑时，同步更新 Python、UI API 和配置页。

@@ -16,7 +16,7 @@
       "label": "Remote Runtime",
       "backend": "ssh_shell",
       "ssh_command": "ssh user@example-host",
-      "workspace": "/path/to/InternAgentS",
+      "workspace": "/path/to/天玄·千枢科学发现平台",
       "remote_url": "http://127.0.0.1:22025",
       "remote_runtime_port": 22024,
       "remote_assistant_id": "agent",

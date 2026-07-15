@@ -43,7 +43,7 @@ class KbSyncMiddleware(AgentMiddleware):
             "messages": [
                 SystemMessage(
                     content=(
-                        f"[InternAgentS KB sync warning] Resource {self.resource.id} failed to pull KB before this run.\n"
+                        f"[天玄·千枢科学发现平台 KB sync warning] Resource {self.resource.id} failed to pull KB before this run.\n"
                         f"{result.output}"
                     )
                 )
@@ -58,7 +58,7 @@ class KbSyncMiddleware(AgentMiddleware):
             "messages": [
                 SystemMessage(
                     content=(
-                        f"[InternAgentS KB sync warning] Resource {self.resource.id} failed to push KB after this run.\n"
+                        f"[天玄·千枢科学发现平台 KB sync warning] Resource {self.resource.id} failed to push KB after this run.\n"
                         f"{result.output}"
                     )
                 )

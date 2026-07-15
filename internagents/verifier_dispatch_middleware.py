@@ -1,4 +1,4 @@
-"""Verification gate middleware for InternAgentS.
+"""Verification gate middleware for 天玄·千枢科学发现平台.
 
 VerifierDispatchMiddleware implements synchronous review gating: at each
 turn boundary (LLM produced a final AIMessage with no tool_calls, OR LLM

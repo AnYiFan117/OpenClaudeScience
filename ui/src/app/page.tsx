@@ -1064,7 +1064,7 @@ function WorkbenchSidebar({
           <span>{t("projectList")}</span>
         </Link>
         <div>
-          <h1>InternAgentS</h1>
+          <h1>天玄·千枢科学发现平台</h1>
           <span>{t("projectWorkbench")}</span>
         </div>
       </section>

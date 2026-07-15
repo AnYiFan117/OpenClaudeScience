@@ -1,4 +1,4 @@
-# InternAgentS `feature/frame-agents` Review Plan
+# 天玄·千枢科学发现平台 `feature/frame-agents` Review Plan
 
 > **活的 review 追踪文档**。每 review 一项，在 status 里改标记。等所有 R1-R5 处理完，本文档可以删掉再 merge。
 
@@ -58,7 +58,7 @@
 ### C3 · `a05bf7a` — Phase 3 · 4 agent 角色 [🟡]
 
 **新建**：
-- 4 个 YAML prompts（`internagents/prompts/agents/{main,reviewer,bookmarker,onboarding}.yaml`）— 从 Claude Science 抬升，身份改为 InternAgentS
+- 4 个 YAML prompts（`internagents/prompts/agents/{main,reviewer,bookmarker,onboarding}.yaml`）— 从 Claude Science 抬升，身份改为 天玄·千枢科学发现平台
 - `internagents/agent_registry.py`（316 行）— `AgentConfig` dataclass + `AGENT_CONFIGS` dict + YAML loaders
 
 **编辑**：
@@ -300,7 +300,7 @@ import langchain.tools; print(type(runtime).__mro__)
 
 ### R3 · `FrameEnsureMiddleware.before_model_call` 返回类型 [🟡 需验证]
 
-**问题**：`frame_middleware.py:29` 的 `before_model_call` 返回 `ModelRequest | Interrupt | None`。但对照 InternAgentS 里其他 middleware（`date_middleware.py`, `goal_middleware.py`），可能**惯用返回 None**（就地修改 state）。返回 `ModelRequest` 可能是 LangChain 期望或忽略。
+**问题**：`frame_middleware.py:29` 的 `before_model_call` 返回 `ModelRequest | Interrupt | None`。但对照 天玄·千枢科学发现平台 里其他 middleware（`date_middleware.py`, `goal_middleware.py`），可能**惯用返回 None**（就地修改 state）。返回 `ModelRequest` 可能是 LangChain 期望或忽略。
 
 **验证方法**：
 ```bash

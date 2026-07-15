@@ -1,4 +1,4 @@
-"""InternAgentS LangGraph exports for coordinator and runtime processes."""
+"""天玄·千枢科学发现平台 LangGraph exports for coordinator and runtime processes."""
 
 from __future__ import annotations
 
@@ -443,7 +443,7 @@ def _create_agent_model() -> str | Any:
 
 
 class InternAgentState(TypedDict):
-    """LangGraph state for InternAgentS agent execution.
+    """LangGraph state for 天玄·千枢科学发现平台 agent execution.
 
     Uses the Frame execution model as the source of truth for persistent-objective mode.
     """
@@ -704,7 +704,7 @@ def _thread_skill_catalog_paths(config: dict[str, Any]) -> list[str]:
 def _thread_skill_label(config: dict[str, Any]) -> str:
     skills_config = config.get("skills")
     label = skills_config.get("label") if isinstance(skills_config, dict) else None
-    return label.strip() if isinstance(label, str) and label.strip() else "InternAgentS"
+    return label.strip() if isinstance(label, str) and label.strip() else "天玄·千枢科学发现平台"
 
 
 def _thread_skill_middleware(
@@ -883,7 +883,7 @@ def _resource_system_prompt(base_prompt: str, resource: ResourceConfig) -> str:
     )
     return (
         f"{base_prompt}\n\n"
-        "You are running in a resource-bound InternAgentS session.\n"
+        "You are running in a resource-bound 天玄·千枢科学发现平台 session.\n"
         f"Resource id: {resource.id}\n"
         f"Resource label: {resource.label}\n"
         "Workspace logical root: /\n"
@@ -1546,6 +1546,11 @@ def _filter_middlewares_for_agent(
         from internagents.verifier_dispatch_middleware import VerifierDispatchMiddleware
         middleware.append(VerifierDispatchMiddleware(agent_config_dict))
 
+    # Onboarding gate — main agent, needs resource to compute workspace id
+    if agent_cfg.name == "main" and resource is not None:
+        from internagents.onboarding_middleware import OnboardingGateMiddleware
+        middleware.append(OnboardingGateMiddleware(resource=resource))
+
     # Always add compatibility and budget middlewares for all agents
     middleware.append(ImageContentCompatibilityMiddleware())
     middleware.append(WebSearchBudgetMiddleware())
@@ -1836,10 +1841,10 @@ def create_runtime_agent():  # noqa: ANN201
 
     system_prompt = (
         f"{base_prompt}\n\n"
-        "You are running inside an InternAgentS agent runtime process.\n"
+        "You are running inside an 天玄·千枢科学发现平台 agent runtime process.\n"
         f"Runtime id: {runtime_id}\n"
         f"Runtime agent: {runtime_agent_name}\n"
-        "The main InternAgentS server coordinates sessions and projects your state to the frontend. "
+        "The main 天玄·千枢科学发现平台 server coordinates sessions and projects your state to the frontend. "
         "Do not change server network settings, firewall settings, SSH daemon settings, or cloud security-group settings. "
         "If such a change seems necessary, stop and ask the user.\n"
         f"{_office_attachment_prompt()}"

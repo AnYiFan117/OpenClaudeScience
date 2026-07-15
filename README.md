@@ -1,9 +1,9 @@
 <div align="center">
   <p>
-    <img src="./docs/assets/readme/internagents-banner.png" alt="InternAgentS banner" width="100%">
+    <img src="./docs/assets/readme/internagents-banner.png" alt="天玄·千枢科学发现平台 banner" width="100%">
   </p>
 
-  <h1 align="center">InternAgentS: Bringing the Claude Science experience to the open-source world.</h1>
+  <h1 align="center">天玄·千枢科学发现平台: Bringing the Claude Science experience to the open-source world.</h1>
   <p align="center">
     Built on DeepAgents and LangGraph to extend research agent runtimes across project context, files, skills, remote resources, and human approvals.
   </p>
@@ -31,13 +31,13 @@
   </p>
 </div>
 
-InternAgentS is a local-first research workspace built on DeepAgents/LangGraph,
+天玄·千枢科学发现平台 is a local-first research workspace built on DeepAgents/LangGraph,
 with project runtimes, skills, remote resources, and approval flows designed for
 scientific work.
 
 ## Highlights
 
-- **DeepAgents/LangGraph, extended for research**: InternAgentS adapts the
+- **DeepAgents/LangGraph, extended for research**: 天玄·千枢科学发现平台 adapts the
   runtime, workspace, skills, tools, and approval flow around scientific
   projects.
 - **Remote environments without the ceremony**: connect SSH workspaces, sync
@@ -57,7 +57,7 @@ scientific work.
 
 ## Web Mode (No Desktop App Needed)
 
-InternAgentS runs as a local webapp accessible from any browser. To start without Electron:
+天玄·千枢科学发现平台 runs as a local webapp accessible from any browser. To start without Electron:
 
 ```bash
 bash scripts/web.sh
@@ -95,16 +95,16 @@ Then open http://127.0.0.1:3000 in your browser. See [docs/webapp.md](docs/webap
 
 ## Feature Overview
 
-InternAgentS brings chat, project sessions, file browsing, and local runtime
+天玄·千枢科学发现平台 brings chat, project sessions, file browsing, and local runtime
 status into a single research workbench. The right panel keeps project files and
 artifacts visible while the center conversation stays focused on the current
 task.
 
-![InternAgentS workspace preview](./docs/assets/readme/workspace-preview-en.jpeg)
+![天玄·千枢科学发现平台 workspace preview](./docs/assets/readme/workspace-preview-en.jpeg)
 
 ### Local-First Research Workspace
 
-InternAgentS is organized as a three-panel workspace:
+天玄·千枢科学发现平台 is organized as a three-panel workspace:
 
 | Area | What it does |
 | --- | --- |
@@ -119,7 +119,7 @@ search, and previews for common research artifacts.
 ### Skills and Science Capability Library
 
 Skills are reusable capabilities that can be enabled for an agent or session.
-InternAgentS searches shared user catalogs first, then project catalogs:
+天玄·千枢科学发现平台 searches shared user catalogs first, then project catalogs:
 
 ```text
 ~/.internagents/myskills
@@ -148,7 +148,7 @@ The UI includes both Chinese and English copy.
 
 ### MCP and SCP Connectors
 
-InternAgentS can load external tools through MCP server configuration and can
+天玄·千枢科学发现平台 can load external tools through MCP server configuration and can
 prepare SCP Hub access for science skill workflows.
 
 Local MCP config locations:
@@ -164,7 +164,7 @@ Connector secrets, private commands, headers, and endpoints should stay local.
 
 ### Linux SSH Compute Jobs
 
-InternAgentS has an experimental Linux-only SSH compute provider. This is
+天玄·千枢科学发现平台 has an experimental Linux-only SSH compute provider. This is
 separate from SSH remote runtime setup: the local backend keeps the current
 conversation session and submits detached jobs to a registered Linux SSH host.
 
@@ -285,7 +285,7 @@ INTERNAGENTS_SKIP_INSTALL=1 ./scripts/dev.sh
 
 ## Security and Privacy
 
-InternAgentS is local-first by default. Project files are accessed through the
+天玄·千枢科学发现平台 is local-first by default. Project files are accessed through the
 workspace API, and runtime state is kept under local directories such as
 `.internagents/`.
 
@@ -347,7 +347,7 @@ For Python backend changes:
 
 ## Contributing
 
-InternAgentS is shaped as an open research tool. Helpful contributions include:
+天玄·千枢科学发现平台 is shaped as an open research tool. Helpful contributions include:
 
 - bug reports with clear reproduction steps
 - UI polish that keeps existing workflows stable
@@ -356,12 +356,12 @@ InternAgentS is shaped as an open research tool. Helpful contributions include:
 - documentation for installation, configuration, and research workflows
 
 Please keep changes scoped. DeepAgents is treated as an external SDK, so
-InternAgentS should extend it through public APIs, adapters, middleware, tools,
+天玄·千枢科学发现平台 should extend it through public APIs, adapters, middleware, tools,
 and local resource configuration rather than patching SDK internals.
 
 ## License
 
-InternAgentS is released under the [MIT License](LICENSE).
+天玄·千枢科学发现平台 is released under the [MIT License](LICENSE).
 
 ## Roadmap Notes
 

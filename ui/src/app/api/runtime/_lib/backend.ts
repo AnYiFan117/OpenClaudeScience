@@ -156,7 +156,7 @@ function agentEntrypointShim(): string {
     '_root = Path(os.environ["INTERNAGENTS_GRAPH_ROOT"])',
     '_spec = importlib.util.spec_from_file_location("_internagents_real_agent", _root / "agent.py")',
     "if _spec is None or _spec.loader is None:",
-    '    raise RuntimeError("Unable to load InternAgentS graph entrypoint.")',
+    '    raise RuntimeError("Unable to load 天玄·千枢科学发现平台 graph entrypoint.")',
     "_module = importlib.util.module_from_spec(_spec)",
     "sys.modules[_spec.name] = _module",
     "_spec.loader.exec_module(_module)",
@@ -747,7 +747,7 @@ export async function restartBackend(): Promise<BackendRestartResult> {
       return {
         status: "failed",
         message:
-          "后台端口已有健康服务，但无法确认它属于 InternAgentS，已跳过自动应用。",
+          "后台端口已有健康服务，但无法确认它属于 天玄·千枢科学发现平台，已跳过自动应用。",
         url,
         logPath: paths.backendLog,
       };
@@ -756,7 +756,7 @@ export async function restartBackend(): Promise<BackendRestartResult> {
       return {
         status: "failed",
         message:
-          "本机 runtime 端口已有健康服务，但无法确认它属于 InternAgentS，已跳过自动应用。",
+          "本机 runtime 端口已有健康服务，但无法确认它属于 天玄·千枢科学发现平台，已跳过自动应用。",
         url,
         logPath: paths.localRuntimeLog,
       };

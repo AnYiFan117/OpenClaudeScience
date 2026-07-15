@@ -1,6 +1,6 @@
-# InternAgentS Agent Roles
+# 天玄·千枢科学发现平台 Agent Roles
 
-InternAgentS implements a multi-agent orchestration model with four specialized roles, each tailored for specific tasks in the research workflow. This architecture enables complex research tasks to be broken down into stages, with each stage handled by an agent optimized for that work.
+天玄·千枢科学发现平台 implements a multi-agent orchestration model with four specialized roles, each tailored for specific tasks in the research workflow. This architecture enables complex research tasks to be broken down into stages, with each stage handled by an agent optimized for that work.
 
 ## Overview
 
@@ -177,7 +177,7 @@ Guides new users through an initial setup conversation to configure their worksp
 
 **Flow:**
 ```
-1. User opens InternAgentS
+1. User opens 天玄·千枢科学发现平台
 2. Onboarding greets and starts interview
 3. Question 1: "What kind of biology do you do?" (pre-rendered)
 4. Question 2-4: Adapt to answers (e.g., computational → show relevant tasks)
@@ -228,7 +228,7 @@ description: General-purpose scientific computing agent
 enable_subtask_delegation: false
 # other metadata fields...
 ---
-You are InternAgentS, a general-purpose scientific computing agent...
+You are 天玄·千枢科学发现平台, a general-purpose scientific computing agent...
 [system prompt body continues...]
 ```
 

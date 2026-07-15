@@ -1383,7 +1383,7 @@ async function buildBackendCliPackage(
   }
 
   if (!(await commandExists("tar"))) {
-    throw new Error("本机缺少 tar，无法打包 InternAgentS backend CLI。");
+    throw new Error("本机缺少 tar，无法打包 天玄·千枢科学发现平台 backend CLI。");
   }
 
   const buildId = `${Date.now()}-${process.pid}`;
@@ -1417,7 +1417,7 @@ async function buildBackendCliPackage(
   const fingerprint = (await hashDirectoryContents(stagingDir)).slice(0, 16);
 
   try {
-    pushLog(log, "打包独立 InternAgentS backend CLI...", onLog);
+    pushLog(log, "打包独立 天玄·千枢科学发现平台 backend CLI...", onLog);
     await execFileAsync("tar", ["-czf", artifactPath, "-C", stagingDir, "."], {
       timeout: 120_000,
       maxBuffer: COMMAND_MAX_BUFFER,

@@ -15,7 +15,7 @@
 - 新增 stream event layer，捕获 SDK 原始 stream 事件，补齐 `useStream` 没有直接暴露的 interrupt/subgraph 信息。
 - Web UI 的 assistant、thread、chat 提交逻辑改为通过 RemoteAgent 访问，减少页面和 hooks 内部直接拼 SDK 调用的分散逻辑。
 - 修复 orphan interrupt 渲染：当后端 thread 已进入 interrupted 状态但没有可见工具调用行时，仍展示审批组件。
-- `deepagent.config.json` 移除 `execute` 审批配置，并更新 system prompt 为中文科研助手和 InternAgentS 身份说明。
+- `deepagent.config.json` 移除 `execute` 审批配置，并更新 system prompt 为中文科研助手和 天玄·千枢科学发现平台 身份说明。
 
 ## 不包含
 

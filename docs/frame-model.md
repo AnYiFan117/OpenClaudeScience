@@ -2,7 +2,7 @@
 
 ## Overview
 
-Frame is the fundamental execution unit in InternAgentS Phase 2. It replaces the flat `GoalState` model with a tree-structured state that supports:
+Frame is the fundamental execution unit in 天玄·千枢科学发现平台 Phase 2. It replaces the flat `GoalState` model with a tree-structured state that supports:
 
 - **Parent/child derivation** for multi-agent orchestration (e.g., main agent spawning a reviewer)
 - **Session boundaries** via `root_frame_id` (one conversation tree = one root)

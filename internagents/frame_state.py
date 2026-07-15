@@ -1,4 +1,4 @@
-"""Frame execution model for InternAgentS multi-agent orchestration.
+"""Frame execution model for 天玄·千枢科学发现平台 multi-agent orchestration.
 
 A Frame is the atomic unit of agent execution. All agent runs (main, reviewer, etc.)
 are represented as Frame instances organized in a tree structure:

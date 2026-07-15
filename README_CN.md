@@ -1,9 +1,9 @@
 <div align="center">
   <p>
-    <img src="./docs/assets/readme/internagents-banner.png" alt="InternAgentS banner" width="100%">
+    <img src="./docs/assets/readme/internagents-banner.png" alt="天玄·千枢科学发现平台 banner" width="100%">
   </p>
 
-  <h1 align="center">InternAgentS：面向开源社区的 Claude Science 式研究工作台。</h1>
+  <h1 align="center">天玄·千枢科学发现平台：面向开源社区的 Claude Science 式研究工作台。</h1>
   <p align="center">
     基于 DeepAgents 和 LangGraph 扩展科研 Agent 运行时，连接项目上下文、文件系统、技能、远程资源和人工授权流程。
   </p>
@@ -31,7 +31,7 @@
   </p>
 </div>
 
-InternAgentS 为研究者和开发者提供一个本地优先的科研 Agent 工作台，用来完成论文阅读、实验分析、代码迭代、技能调用和计算资源协作等任务。项目基于 DeepAgents/LangGraph 开发，并在项目级 runtime、backend adapter、workspace protocol、技能目录、本地授权和远程资源协作等层面做了面向科研场景的扩展。
+天玄·千枢科学发现平台 为研究者和开发者提供一个本地优先的科研 Agent 工作台，用来完成论文阅读、实验分析、代码迭代、技能调用和计算资源协作等任务。项目基于 DeepAgents/LangGraph 开发，并在项目级 runtime、backend adapter、workspace protocol、技能目录、本地授权和远程资源协作等层面做了面向科研场景的扩展。
 
 ## 亮点
 
@@ -64,13 +64,13 @@ InternAgentS 为研究者和开发者提供一个本地优先的科研 Agent 工
 
 ## 功能概览
 
-InternAgentS 将会话、项目文件、技能入口和本地运行状态放在同一个科研工作台中。右侧面板保持项目文件和产物可见，中间区域专注当前对话任务，方便在阅读、分析、运行和整理之间切换。
+天玄·千枢科学发现平台 将会话、项目文件、技能入口和本地运行状态放在同一个科研工作台中。右侧面板保持项目文件和产物可见，中间区域专注当前对话任务，方便在阅读、分析、运行和整理之间切换。
 
-![InternAgentS 中文界面预览](./docs/assets/readme/workspace-preview-cn.jpeg)
+![天玄·千枢科学发现平台 中文界面预览](./docs/assets/readme/workspace-preview-cn.jpeg)
 
 ### 本地优先的科研工作区
 
-InternAgentS 采用三栏工作区：
+天玄·千枢科学发现平台 采用三栏工作区：
 
 | 区域 | 作用 |
 | --- | --- |
@@ -82,7 +82,7 @@ InternAgentS 采用三栏工作区：
 
 ### Skills 和科学能力库
 
-Skills 是可以为 Agent 或会话启用的可复用能力。InternAgentS 会先搜索用户共享 catalog，再搜索项目 catalog：
+Skills 是可以为 Agent 或会话启用的可复用能力。天玄·千枢科学发现平台 会先搜索用户共享 catalog，再搜索项目 catalog：
 
 ```text
 ~/.internagents/myskills
@@ -91,7 +91,7 @@ skills
 .internagents/imported-skills
 ```
 
-设置 UI 支持 built-in skills、imported skills 和 science skills。导入的技能会复制到用户级 catalog，因此同一能力可以被多个 InternAgentS 项目复用。
+设置 UI 支持 built-in skills、imported skills 和 science skills。导入的技能会复制到用户级 catalog，因此同一能力可以被多个 天玄·千枢科学发现平台 项目复用。
 
 ### 模型、授权和外观设置
 
@@ -109,7 +109,7 @@ UI 包含中文和英文文案。
 
 ### MCP 和 SCP Connectors
 
-InternAgentS 可以通过 MCP server 配置加载外部工具，也可以为 science skill workflow 准备 SCP Hub 访问。
+天玄·千枢科学发现平台 可以通过 MCP server 配置加载外部工具，也可以为 science skill workflow 准备 SCP Hub 访问。
 
 本地 MCP config 位置：
 
@@ -124,7 +124,7 @@ Connector secrets、private commands、headers 和 endpoints 应保存在本地�
 
 ### Linux SSH Compute Jobs
 
-InternAgentS 有一个实验性的 Linux-only SSH compute provider。它和 SSH remote runtime setup 是两个概念：本地 backend 保持当前会话，并向注册的 Linux SSH host 提交 detached jobs。
+天玄·千枢科学发现平台 有一个实验性的 Linux-only SSH compute provider。它和 SSH remote runtime setup 是两个概念：本地 backend 保持当前会话，并向注册的 Linux SSH host 提交 detached jobs。
 
 当前范围：
 
@@ -230,7 +230,7 @@ INTERNAGENTS_SKIP_INSTALL=1 ./scripts/dev.sh
 
 ## 安全和隐私
 
-InternAgentS 默认 local-first。项目文件通过 workspace API 访问，runtime state 保存在 `.internagents/` 等本地目录下。
+天玄·千枢科学发现平台 默认 local-first。项目文件通过 workspace API 访问，runtime state 保存在 `.internagents/` 等本地目录下。
 
 - 把 model API keys、MCP headers、SCP Hub keys、server addresses、SSH aliases 和机器相关路径保存在本地 `.env` 或 runtime config 文件中。
 - 不要提交 `.env`、`internagent.resources.local.json`、private SSH material、logs、pids、uploads、LangGraph state 或 active skill runtime directories。
@@ -284,7 +284,7 @@ Python backend 改动建议运行：
 
 ## 贡献
 
-InternAgentS 是一个开放科研工具。欢迎贡献：
+天玄·千枢科学发现平台 是一个开放科研工具。欢迎贡献：
 
 - 带清晰复现步骤的 bug reports
 - 保持现有 workflow 稳定的 UI polish
@@ -292,11 +292,11 @@ InternAgentS 是一个开放科研工具。欢迎贡献：
 - 将 secrets 留在本地的 connector integrations
 - 安装、配置和科研 workflow 文档
 
-请保持改动范围清晰。DeepAgents 被视为外部 SDK，InternAgentS 应通过公开 API、adapters、middleware、tools 和本地 resource configuration 扩展它，而不是 patch SDK internals。
+请保持改动范围清晰。DeepAgents 被视为外部 SDK，天玄·千枢科学发现平台 应通过公开 API、adapters、middleware、tools 和本地 resource configuration 扩展它，而不是 patch SDK internals。
 
 ## 许可证
 
-InternAgentS 基于 [MIT License](LICENSE) 发布。
+天玄·千枢科学发现平台 基于 [MIT License](LICENSE) 发布。
 
 ## Roadmap Notes
 

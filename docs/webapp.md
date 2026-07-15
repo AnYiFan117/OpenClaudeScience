@@ -1,10 +1,10 @@
-# Running InternAgentS as a Webapp
+# Running 天玄·千枢科学发现平台 as a Webapp
 
-InternAgentS runs natively as a **local webapp** — no desktop application required. The entire system is accessible via your browser at `http://127.0.0.1:3000`.
+天玄·千枢科学发现平台 runs natively as a **local webapp** — no desktop application required. The entire system is accessible via your browser at `http://127.0.0.1:3000`.
 
 ## Quick Start
 
-To start InternAgentS in web mode:
+To start 天玄·千枢科学发现平台 in web mode:
 
 ```bash
 bash scripts/web.sh

@@ -6,11 +6,11 @@ product
 
 ## Users
 
-InternAgentS is used by people working in a local AI agent workspace. They move between conversations, workspace files, skills, service settings, and generated artifacts while trying to complete practical research, writing, coding, and automation tasks.
+天玄·千枢科学发现平台 is used by people working in a local AI agent workspace. They move between conversations, workspace files, skills, service settings, and generated artifacts while trying to complete practical research, writing, coding, and automation tasks.
 
 ## Product Purpose
 
-InternAgentS provides a local workbench for running DeepAgent workflows through a browser UI. Success means users can understand the current workspace, start or resume conversations, attach or inspect files, configure services, and enable skills without losing task context.
+天玄·千枢科学发现平台 provides a local workbench for running DeepAgent workflows through a browser UI. Success means users can understand the current workspace, start or resume conversations, attach or inspect files, configure services, and enable skills without losing task context.
 
 ## Brand Personality
 

@@ -1,4 +1,4 @@
-# InternAgentS
+# 天玄·千枢科学发现平台
 
 [Deep Agents](https://github.com/langchain-ai/deepagents) is a simple, open source agent harness that implements a few generally useful tools, including planning (prior to task execution), computer access (giving the able access to a shell and a filesystem), and sub-agent delegation (isolated task execution). This is a UI for interacting with deepagents.
 
@@ -50,7 +50,7 @@ You can get the Deployment URL and Assistant ID from the terminal output and `la
 - Deployment URL: <http://127.0.1:2024>
 - Assistant ID: `research`
 
-**Open InternAgentS** at [http://localhost:3000](http://localhost:3000). This
+**Open 天玄·千枢科学发现平台** at [http://localhost:3000](http://localhost:3000). This
 checkout defaults to the local DeepAgent backend:
 
 - Deployment URL: <http://127.0.0.1:2024>

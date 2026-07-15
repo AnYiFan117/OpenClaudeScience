@@ -14,14 +14,14 @@ export const UI_LANGUAGES: Array<{
 
 const COPY = {
   zh: {
-    appStarting: "InternAgentS 正在启动中...",
+    appStarting: "天玄·千枢科学发现平台 正在启动中...",
     loading: "正在加载...",
     loadingConfig: "正在读取配置...",
     loadingProjects: "正在读取项目...",
     language: "语言",
     chinese: "中文",
     english: "English",
-    labName: "上海人工智能实验室",
+    labName: "中国航天科技体系与创新研究院",
     open: "打开",
     thisFile: "这个",
     unknownTool: "未知工具",
@@ -52,7 +52,7 @@ const COPY = {
       "返回项目列表，点击项目右侧的编辑按钮重新选择文件夹。",
     removeProject: "移除项目",
     removeProjectConfirm:
-      "确认从工作台移除“{name}”？这只会移除 InternAgentS 的项目记录，不会删除本地文件。",
+      "确认从工作台移除“{name}”？这只会移除 天玄·千枢科学发现平台 的项目记录，不会删除本地文件。",
     removeProjectSuccess: "项目已从工作台移除",
     removeProjectFailed: "项目移除失败",
     noProjects: "还没有项目",
@@ -320,9 +320,9 @@ const COPY = {
     capabilityPlugins: "能力插件",
     aboutAndUpdates: "关于与更新",
     aboutSubtitle: "自我介绍和本机更新",
-    aboutIntroTitle: "我是 InternAgentS",
+    aboutIntroTitle: "我是 天玄·千枢科学发现平台",
     aboutIntroBody:
-      "InternAgentS 由上海人工智能实验室研发。它不是一个单纯“会聊天”的大模型，而是一个面向科研与技术探索的大模型智能体。它将对话、文件、代码和计算资源组织在同一个工作台中，让 AI 不只是回答问题，而是能够进入真实的研究与开发过程，协助理解材料、拆解任务、调用工具、推进实验，并在关键步骤中保留人的监督、审批和纠偏能力。",
+      "天玄·千枢科学发现平台 由中国航天科技体系与创新研究院研发。它不是一个单纯“会聊天”的大模型，而是一个面向科研与技术探索的大模型智能体。它将对话、文件、代码和计算资源组织在同一个工作台中，让 AI 不只是回答问题，而是能够进入真实的研究与开发过程，协助理解材料、拆解任务、调用工具、推进实验，并在关键步骤中保留人的监督、审批和纠偏能力。",
     helpDocs: "帮助文档",
     updates: "更新",
     updateDescription: "查看当前版本并从 GitHub Release 获取更新。",
@@ -343,9 +343,9 @@ const COPY = {
     checkUpdateFailed: "检查更新失败",
     updateFailed: "更新失败",
     rollbackFailed: "回滚失败",
-    confirmUpdateToTag: "即将把 InternAgentS 更新到 {tag}。",
+    confirmUpdateToTag: "即将把 天玄·千枢科学发现平台 更新到 {tag}。",
     confirmUpdateToLatest:
-      "即将把 InternAgentS 更新到最新 release。",
+      "即将把 天玄·千枢科学发现平台 更新到最新 release。",
     confirmUpdateBody:
       "更新会下载最新 DMG，退出当前 App，替换本机 .app 后重新打开。",
     confirmRollbackToVersion: "即将回滚到 {version}。",
@@ -356,7 +356,7 @@ const COPY = {
     releaseNotes: "Release Notes",
 
     connectServer: "连接服务器",
-    connectServerSubtitle: "配置 InternAgentS 要连接的本地或远程服务",
+    connectServerSubtitle: "配置 天玄·千枢科学发现平台 要连接的本地或远程服务",
     serverConnection: "服务器连接",
     serverConnectionDescription:
       "本机默认连接 LangGraph 开发服务；保存后回到工作台会自动使用新配置。",
@@ -369,7 +369,7 @@ const COPY = {
     saveAndReturnWorkbench: "保存并返回工作台",
     cloudHosting: "云端托管",
     cloudHostingDescription:
-      "连接云端部署的 InternAgentS，让同一个助手可以长期运行、跨设备访问。",
+      "连接云端部署的 天玄·千枢科学发现平台，让同一个助手可以长期运行、跨设备访问。",
     deploymentAddress: "部署地址",
     deploymentAddressHelp: "将云端 Deployment URL 填入上方服务器地址。",
     assistantIdHelp: "使用云端 graph 或 assistant 对应的 ID。",
@@ -386,10 +386,10 @@ const COPY = {
     applyIdleTitle: "后台空闲时自动重启并加载当前配置。",
     saveNowTitle: "保存当前配置并立即应用。",
     applyNowTitle: "立即重启并加载当前配置。",
-    firstRunTitle: "首次设置 InternAgentS",
+    firstRunTitle: "首次设置 天玄·千枢科学发现平台",
     firstRunSubtitle:
       "可以现在配置模型服务，也可以先进入项目，稍后在设置里补充。",
-    finishSetup: "完成设置，进入 InternAgentS",
+    finishSetup: "完成设置，进入 天玄·千枢科学发现平台",
     skipSetup: "跳过，稍后设置",
     skipSetupTitle: "先进入项目，之后可在设置页配置模型服务。",
     configPending: "有配置等待应用。",
@@ -535,7 +535,7 @@ const COPY = {
     noDescription: "暂无介绍",
     skillCreatorName: "技能创建器",
     skillCreatorDescription:
-      "创建或更新 InternAgentS 技能，把常用流程封装成可复用能力。",
+      "创建或更新 天玄·千枢科学发现平台 技能，把常用流程封装成可复用能力。",
     patentDisclosureName: "专利申请",
     patentDisclosureDescription:
       "扫描技术资料挖掘专利点，完成查新对比、自检，并生成专利技术交底书。",
@@ -600,7 +600,7 @@ const COPY = {
     openProject: "打开项目",
     remoteConnectionTitle: "接入远程项目",
     remoteConnectionDescription:
-      "连接一台可以通过 SSH 登录的远端机器。InternAgentS 会在远端准备运行环境，并把你指定的目录加入项目列表，之后可以像本地项目一样切换使用。",
+      "连接一台可以通过 SSH 登录的远端机器。天玄·千枢科学发现平台 会在远端准备运行环境，并把你指定的目录加入项目列表，之后可以像本地项目一样切换使用。",
     remoteConnectionSshConfigTitle: "从 SSH config 选择",
     remoteConnectionSshConfigDescription:
       "适合已经在本机 SSH config 里配置好 Host、端口和私钥的机器。",
@@ -622,7 +622,7 @@ const COPY = {
     remoteDisplayNamePlaceholder: "实验服务器",
     remoteWorkspaceLabel: "远端项目目录",
     remoteWorkspaceHelp:
-      "这是远端机器上的项目目录。InternAgentS 会把它作为文件浏览和任务执行的项目目录；运行环境会安装到独立目录，不会放进这里。",
+      "这是远端机器上的项目目录。天玄·千枢科学发现平台 会把它作为文件浏览和任务执行的项目目录；运行环境会安装到独立目录，不会放进这里。",
     localPortLabel: "本机连接端口（可选）",
     localPortPlaceholder: "自动选择，例如 22025",
     localPortHelp: "通常无需填写，系统会自动选择可用端口。只有需要固定端口时再手动填写。",
@@ -741,14 +741,14 @@ const COPY = {
     remoteRuntimeNoResult: "远程 backend runtime 同步失败：没有返回结果。",
   },
   en: {
-    appStarting: "Starting InternAgentS...",
+    appStarting: "Starting 天玄·千枢科学发现平台...",
     loading: "Loading...",
     loadingConfig: "Loading configuration...",
     loadingProjects: "Loading projects...",
     language: "Language",
     chinese: "Chinese",
     english: "English",
-    labName: "Shanghai Artificial Intelligence Laboratory",
+    labName: "中国航天科技体系与创新研究院",
     open: "Open",
     thisFile: "this",
     unknownTool: "Unknown tool",
@@ -780,7 +780,7 @@ const COPY = {
       "Go back to the project list, then use the edit button to choose the folder again.",
     removeProject: "Remove project",
     removeProjectConfirm:
-      'Remove "{name}" from the workbench? This only removes the InternAgentS project record and will not delete local files.',
+      'Remove "{name}" from the workbench? This only removes the 天玄·千枢科学发现平台 project record and will not delete local files.',
     removeProjectSuccess: "Project removed from workbench",
     removeProjectFailed: "Failed to remove project",
     noProjects: "No projects yet",
@@ -1058,9 +1058,9 @@ const COPY = {
     capabilityPlugins: "Capability plugins",
     aboutAndUpdates: "About and updates",
     aboutSubtitle: "Introduction and local updates",
-    aboutIntroTitle: "I am InternAgentS",
+    aboutIntroTitle: "I am 天玄·千枢科学发现平台",
     aboutIntroBody:
-      "InternAgentS is developed by Shanghai Artificial Intelligence Laboratory. It is not just a large model that chats; it is an agentic workbench for research and technical exploration. It brings conversations, files, code, and compute resources into one workspace so AI can participate in real research and development: understanding materials, breaking down tasks, using tools, advancing experiments, and keeping human supervision, approval, and correction in the loop at critical steps.",
+      "天玄·千枢科学发现平台 is developed by 中国航天科技体系与创新研究院. It is not just a large model that chats; it is an agentic workbench for research and technical exploration. It brings conversations, files, code, and compute resources into one workspace so AI can participate in real research and development: understanding materials, breaking down tasks, using tools, advancing experiments, and keeping human supervision, approval, and correction in the loop at critical steps.",
     helpDocs: "Docs",
     updates: "Updates",
     updateDescription:
@@ -1083,9 +1083,9 @@ const COPY = {
     checkUpdateFailed: "Failed to check for updates",
     updateFailed: "Update failed",
     rollbackFailed: "Rollback failed",
-    confirmUpdateToTag: "Update InternAgentS to {tag}.",
+    confirmUpdateToTag: "Update 天玄·千枢科学发现平台 to {tag}.",
     confirmUpdateToLatest:
-      "Update InternAgentS to the latest release.",
+      "Update 天玄·千枢科学发现平台 to the latest release.",
     confirmUpdateBody:
       "The updater will download the latest DMG, quit the app, replace the local .app, then reopen it.",
     confirmRollbackToVersion: "Roll back to {version}.",
@@ -1097,7 +1097,7 @@ const COPY = {
 
     connectServer: "Connect server",
     connectServerSubtitle:
-      "Configure the local or remote services used by InternAgentS",
+      "Configure the local or remote services used by 天玄·千枢科学发现平台",
     serverConnection: "Server connection",
     serverConnectionDescription:
       "The default local setup connects to the LangGraph development service. After saving, the workbench will use the new configuration.",
@@ -1110,7 +1110,7 @@ const COPY = {
     saveAndReturnWorkbench: "Save and return to workbench",
     cloudHosting: "Cloud hosting",
     cloudHostingDescription:
-      "Connect to a cloud deployment of InternAgentS so the same assistant can run long term and be accessed across devices.",
+      "Connect to a cloud deployment of 天玄·千枢科学发现平台 so the same assistant can run long term and be accessed across devices.",
     deploymentAddress: "Deployment URL",
     deploymentAddressHelp:
       "Paste the cloud Deployment URL into the server URL above.",
@@ -1131,10 +1131,10 @@ const COPY = {
       "Restart and load the current configuration when the backend is idle.",
     saveNowTitle: "Save this configuration and apply it immediately.",
     applyNowTitle: "Restart and load the current configuration immediately.",
-    firstRunTitle: "Set up InternAgentS",
+    firstRunTitle: "Set up 天玄·千枢科学发现平台",
     firstRunSubtitle:
       "Configure a model service now, or enter Projects and finish it later in Settings.",
-    finishSetup: "Finish setup and enter InternAgentS",
+    finishSetup: "Finish setup and enter 天玄·千枢科学发现平台",
     skipSetup: "Skip and set up later",
     skipSetupTitle:
       "Enter Projects now. You can configure the model service later in Settings.",
@@ -1291,7 +1291,7 @@ const COPY = {
     noDescription: "No description yet",
     skillCreatorName: "Skill creator",
     skillCreatorDescription:
-      "Create or update InternAgentS skills by packaging common workflows into reusable capabilities.",
+      "Create or update 天玄·千枢科学发现平台 skills by packaging common workflows into reusable capabilities.",
     patentDisclosureName: "Patent disclosure",
     patentDisclosureDescription:
       "Scan technical materials for patentable ideas, compare prior art, self-check, and generate a technical disclosure.",
@@ -1358,7 +1358,7 @@ const COPY = {
     openProject: "Open project",
     remoteConnectionTitle: "Connect remote project",
     remoteConnectionDescription:
-      "Connect to a remote machine over SSH. InternAgentS prepares the runtime on that machine and adds the selected folder to the project list, so it can be opened like a local project.",
+      "Connect to a remote machine over SSH. 天玄·千枢科学发现平台 prepares the runtime on that machine and adds the selected folder to the project list, so it can be opened like a local project.",
     remoteConnectionSshConfigTitle: "Choose from SSH config",
     remoteConnectionSshConfigDescription:
       "Use a machine that already has Host, port, and key settings in your local SSH config.",
@@ -1381,14 +1381,14 @@ const COPY = {
     remoteDisplayNamePlaceholder: "Lab server",
     remoteWorkspaceLabel: "Remote project folder",
     remoteWorkspaceHelp:
-      "This is the project folder on the remote machine. InternAgentS uses it for file browsing and task execution; the runtime is installed in a separate directory.",
+      "This is the project folder on the remote machine. 天玄·千枢科学发现平台 uses it for file browsing and task execution; the runtime is installed in a separate directory.",
     localPortLabel: "Local connection port (optional)",
     localPortPlaceholder: "Auto, for example 22025",
     localPortHelp:
       "Usually leave this empty. The system chooses an available port unless you need a fixed one.",
     advancedInstallOptions: "Advanced install options",
     advancedInstallHelp:
-      "By default, InternAgentS detects remote python3 + venv. If unavailable, it tries the Python path or Conda/Mamba command you provide.",
+      "By default, 天玄·千枢科学发现平台 detects remote python3 + venv. If unavailable, it tries the Python path or Conda/Mamba command you provide.",
     installModeLabel: "Install mode",
     installAuto: "Auto detect",
     installVenv: "System python3 + venv",
@@ -1399,10 +1399,10 @@ const COPY = {
     condaCommandLabel: "Conda/Mamba command path (optional)",
     condaCommandPlaceholder: "mamba or /opt/conda/bin/conda",
     condaCommandHelp:
-      "In auto mode, this command is preferred when venv is unavailable; if empty, InternAgentS checks mamba and then conda.",
+      "In auto mode, this command is preferred when venv is unavailable; if empty, 天玄·千枢科学发现平台 checks mamba and then conda.",
     autoSyncLocalConfigTitle: "Sync local runtime config automatically",
     autoSyncLocalConfigHelp:
-      "During first connection and every remote-project switch, InternAgentS syncs local .env and deepagent.config.json. These files may contain API keys; connect only to remote machines you trust.",
+      "During first connection and every remote-project switch, 天玄·千枢科学发现平台 syncs local .env and deepagent.config.json. These files may contain API keys; connect only to remote machines you trust.",
     setupLog: "Setup log",
     testConnection: "Test connection",
     connectAndStart: "Connect and start",

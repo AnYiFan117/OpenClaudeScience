@@ -1,4 +1,4 @@
-"""Resource configuration for multi-end InternAgentS sessions."""
+"""Resource configuration for multi-end 天玄·千枢科学发现平台 sessions."""
 
 from __future__ import annotations
 

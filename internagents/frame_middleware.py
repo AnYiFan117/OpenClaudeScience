@@ -1,4 +1,4 @@
-"""Frame-aware model context injection for InternAgentS.
+"""Frame-aware model context injection for 天玄·千枢科学发现平台.
 
 FrameContextMiddleware reads the active frame from state and appends its
 objective + budget to the system message for the model. If no frame is present

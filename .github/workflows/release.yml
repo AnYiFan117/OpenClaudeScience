@@ -109,7 +109,7 @@ jobs:
 
           notes_file="$(mktemp)"
           cat > "$notes_file" <<EOF
-          InternAgentS ${INTERNAGENTS_RELEASE_TAG}
+          天玄·千枢科学发现平台 ${INTERNAGENTS_RELEASE_TAG}
 
           Assets:
           - macOS Apple Silicon DMG

@@ -1,4 +1,4 @@
-"""Runtime date/time context injection for InternAgentS."""
+"""Runtime date/time context injection for 天玄·千枢科学发现平台."""
 
 from __future__ import annotations
 

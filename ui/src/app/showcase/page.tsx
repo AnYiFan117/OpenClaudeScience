@@ -88,12 +88,12 @@ const projectHighlights = [
   {
     icon: Layers3,
     title: "MCP/SCP 科研工具生态",
-    copy: "接入外部工具、数据库和服务；对接上海人工智能实验室 SCP 能力生态，让领域工具进入工作台。",
+    copy: "接入外部工具、数据库和服务；对接中国航天科技体系与创新研究院 SCP 能力生态，让领域工具进入工作台。",
   },
   {
     icon: BrainCircuit,
     title: "国产模型灵活接入",
-    copy: "可连接 DeepSeek、通义千问、GLM 等国产模型服务，即将支持上海人工智能实验室集思国产模型免费平台。",
+    copy: "可连接 DeepSeek、通义千问、GLM 等国产模型服务，即将支持中国航天科技体系与创新研究院集思国产模型免费平台。",
   },
   {
     icon: ShieldCheck,
@@ -326,7 +326,7 @@ function HeroScene() {
               <span className="h-2.5 w-2.5 rounded-full bg-[#2dd4bf]" />
             </div>
             <div className="rounded-md border border-white/14 bg-black/20 px-3 py-1 font-mono text-xs text-white/62">
-              internagents.local
+              天玄·千枢科学发现平台.local
             </div>
           </div>
           <div className="relative grid h-[456px] grid-cols-[180px_minmax(0,1fr)_232px]">
@@ -484,10 +484,10 @@ export default function ShowcasePage() {
           <div className="max-w-5xl pb-16 pt-24 sm:pt-28 lg:pt-32">
             <div className="mb-6 inline-flex items-center gap-2 text-base font-black tracking-normal text-[#f5b85b] sm:text-lg">
               <Sparkles className="h-5 w-5 text-[#f5b85b]" />
-              上海人工智能实验室智能体系统中心研发
+              中国航天科技体系与创新研究院智能体系统中心研发
             </div>
             <h1 className="max-w-full text-5xl font-black leading-none tracking-normal !text-white sm:text-7xl lg:text-[7rem] xl:text-[8rem]">
-              InternAgentS
+              天玄·千枢科学发现平台
             </h1>
             <p className="mt-5 max-w-3xl text-3xl font-black leading-tight text-white sm:text-5xl">
               把科研项目变成会行动的智能体工作台。
@@ -526,7 +526,7 @@ export default function ShowcasePage() {
                 不止是聊天入口，而是科研项目工作台。
               </h2>
               <p className="mt-4 max-w-3xl text-sm leading-6 text-[#706b78]">
-                InternAgentS 基于 DeepAgents 和 LangGraph，围绕科研项目重组
+                天玄·千枢科学发现平台 基于 DeepAgents 和 LangGraph，围绕科研项目重组
                 runtime、workspace、skills、tools 和授权流程。
               </p>
             </div>
@@ -611,7 +611,7 @@ export default function ShowcasePage() {
                 功能实景
               </p>
               <h2 className="mt-3 text-[36px] font-black leading-tight tracking-normal">
-                科研需要的工具，都在 InternAgentS 里。
+                科研需要的工具，都在 天玄·千枢科学发现平台 里。
               </h2>
               <p className="mt-4 max-w-2xl text-sm leading-6 text-[#706b78]">
                 看数据、连工具、调计算、管权限、复用技能，都放在同一个工作台里。
@@ -633,10 +633,10 @@ export default function ShowcasePage() {
         <div className="relative mx-auto flex max-w-7xl flex-col justify-between gap-8 lg:flex-row lg:items-center">
           <div>
             <p className="text-sm font-black uppercase tracking-normal text-[#f5b85b]">
-              上海人工智能实验室智能体系统中心研发
+              中国航天科技体系与创新研究院智能体系统中心研发
             </p>
             <h2 className="mt-3 max-w-3xl text-4xl font-black leading-tight tracking-normal !text-white sm:text-5xl">
-              InternAgentS：面向开源社区的科研智能体工作台。
+              天玄·千枢科学发现平台：面向开源社区的科研智能体工作台。
             </h2>
           </div>
           <a

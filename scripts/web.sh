@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# InternAgentS Web Mode
+# 天玄·千枢科学发现平台 Web Mode
 #
-# This script runs InternAgentS as a local webapp (browser-accessible).
+# This script runs 天玄·千枢科学发现平台 as a local webapp (browser-accessible).
 # No Electron desktop app needed — just a browser.
 #
 # Usage:
@@ -33,11 +33,11 @@ HOST="127.0.0.1"
 APP_URL="http://$HOST:$UI_PORT/?assistantId=agent_local"
 
 log() {
-  printf '[InternAgentS Web Mode] %s\n' "$*"
+  printf '[天玄·千枢科学发现平台 Web Mode] %s\n' "$*"
 }
 
 log "=========================================="
-log "Starting InternAgentS as a local webapp"
+log "Starting 天玄·千枢科学发现平台 as a local webapp"
 log "=========================================="
 log ""
 log "This will start three services:"

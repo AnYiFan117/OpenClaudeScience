@@ -40,7 +40,7 @@ const startupSplashLanguageScript = `
     const storedLanguage = localStorage.getItem("internagents.ui.language");
     const inferredLanguage = navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
     const language = storedLanguage === "zh" || storedLanguage === "en" ? storedLanguage : inferredLanguage;
-    const text = language === "en" ? "Starting InternAgentS..." : "InternAgentS \\u6b63\\u5728\\u542f\\u52a8\\u4e2d...";
+    const text = language === "en" ? "Starting 天玄·千枢科学发现平台..." : "天玄·千枢科学发现平台 \\u6b63\\u5728\\u542f\\u52a8\\u4e2d...";
     document.documentElement.lang = language === "en" ? "en" : "zh-CN";
     const target = document.querySelector("[data-internagents-startup-text]");
     if (target) {
@@ -52,8 +52,8 @@ const startupSplashLanguageScript = `
 `;
 
 export const metadata = {
-  title: "InternAgentS",
-  description: "Local InternAgentS UI",
+  title: "天玄·千枢科学发现平台",
+  description: "Local 天玄·千枢科学发现平台 UI",
 };
 
 export default function RootLayout({
@@ -86,7 +86,7 @@ export default function RootLayout({
             data-internagents-startup-text
             suppressHydrationWarning
           >
-            InternAgentS
+            天玄·千枢科学发现平台
           </span>
         </div>
         <Script

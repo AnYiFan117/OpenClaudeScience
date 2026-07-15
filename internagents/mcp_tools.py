@@ -37,7 +37,7 @@ def load_configured_mcp_tools(
     """Load tools from configured MCP servers.
 
     No MCP config means no-op. Individual MCP server failures are recorded and
-    logged, but they do not prevent the InternAgentS graph from starting.
+    logged, but they do not prevent the 天玄·千枢科学发现平台 graph from starting.
     """
 
     global _MCP_TOOLS_CACHE_KEY, _MCP_TOOLS_CACHE

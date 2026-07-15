@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tail-frame.sh — watch live Frame lifecycle events from the InternAgentS logs.
+# tail-frame.sh — watch live Frame lifecycle events from the 天玄·千枢科学发现平台 logs.
 #
 # Usage:
 #   bash scripts/tail-frame.sh                # tail BOTH logs (default)

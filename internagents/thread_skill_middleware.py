@@ -1,4 +1,4 @@
-"""Thread-scoped skill loading for InternAgentS."""
+"""Thread-scoped skill loading for 天玄·千枢科学发现平台."""
 
 from __future__ import annotations
 
@@ -314,7 +314,7 @@ class ThreadSkillMiddleware(AgentMiddleware):
     backend: Any
     root_dir: Path
     catalog_paths: Sequence[str]
-    label: str = "InternAgentS"
+    label: str = "天玄·千枢科学发现平台"
 
     state_schema = ThreadSkillState
 

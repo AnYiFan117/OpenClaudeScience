@@ -1,4 +1,4 @@
-"""MCP server configuration loading for InternAgentS."""
+"""MCP server configuration loading for 天玄·千枢科学发现平台."""
 
 from __future__ import annotations
 

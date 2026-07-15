@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# debug-web.sh — one-click clean + restart the InternAgentS web stack in debug mode.
+# debug-web.sh — one-click clean + restart the 天玄·千枢科学发现平台 web stack in debug mode.
 #
 # What it does:
 #   1. kills every process listening on ports 2024 / 22024 / 3000

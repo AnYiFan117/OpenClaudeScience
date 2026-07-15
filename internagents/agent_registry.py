@@ -1,4 +1,4 @@
-"""Agent registry for InternAgentS multi-agent orchestration.
+"""Agent registry for 天玄·千枢科学发现平台 multi-agent orchestration.
 
 Each agent (main, reviewer, bookmarker, onboarding) has a configuration that
 describes:

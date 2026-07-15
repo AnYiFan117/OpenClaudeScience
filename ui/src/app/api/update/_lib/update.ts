@@ -1100,7 +1100,7 @@ BACKUP=${shellQuote(backupApp)}
 STAGING_ROOT=${shellQuote(stagingDir)}
 APP_PID=${String(appPid)}
 {
-  echo "[$(/bin/date -u +"%Y-%m-%dT%H:%M:%SZ")] Installing InternAgentS ${tagName}"
+  echo "[$(/bin/date -u +"%Y-%m-%dT%H:%M:%SZ")] Installing 天玄·千枢科学发现平台 ${tagName}"
   /bin/sleep 1
   if [ "$APP_PID" -gt 1 ]; then
     /bin/kill -TERM "$APP_PID" 2>/dev/null || true
@@ -1253,7 +1253,7 @@ export async function applyUpdate(): Promise<UpdateStatus> {
         ...status,
         state: "applying",
         installLogPath,
-        message: "安装器已启动，InternAgentS 将退出、替换 App 并重新打开。",
+        message: "安装器已启动，天玄·千枢科学发现平台 将退出、替换 App 并重新打开。",
       },
       "已启动本机安装器。"
     );

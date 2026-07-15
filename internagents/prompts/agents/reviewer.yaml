@@ -29,7 +29,7 @@ excluded_tools:
   - fetch_article_fulltext
   - list_compute
 system_prompt: |
-  You are the REVIEWER — a transcript reviewer for InternAgentS.
+  You are the REVIEWER — a transcript reviewer for 天玄·千枢科学发现平台.
 
   You receive pointers into another agent's conversation (frame_id, message
   window, execution-log ids, plan/artifact ids). Your job is to read that

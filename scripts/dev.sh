@@ -23,6 +23,9 @@ if [ -n "${INTERNAGENTS_LOCAL_RUNTIME_PORT:-}" ]; then
 fi
 LOCAL_RUNTIME_PORT_SCAN_COUNT="${INTERNAGENTS_LOCAL_RUNTIME_PORT_SCAN_COUNT:-32}"
 UI_PORT="${INTERNAGENTS_UI_PORT:-3000}"
+UI_TURBO="${INTERNAGENTS_UI_TURBO:-1}"
+UI_WARMUP="${INTERNAGENTS_UI_WARMUP:-1}"
+UI_WARMUP_TIMEOUT="${INTERNAGENTS_UI_WARMUP_TIMEOUT:-60}"
 OPEN_BROWSER="${INTERNAGENTS_OPEN_BROWSER:-1}"
 SKIP_INSTALL="${INTERNAGENTS_SKIP_INSTALL:-0}"
 ASSISTANT_ID="${INTERNAGENTS_ASSISTANT_ID:-agent_local}"
@@ -56,7 +59,7 @@ LOCAL_RUNTIME_PID=""
 UI_PID=""
 
 log() {
-  printf '[InternAgentS] %s\n' "$*"
+  printf '[天玄·千枢科学发现平台] %s\n' "$*"
 }
 
 langgraph_reload_args() {
@@ -73,7 +76,7 @@ langgraph_jobs_args() {
 }
 
 die() {
-  printf '[InternAgentS] Error: %s\n' "$*" >&2
+  printf '[天玄·千枢科学发现平台] Error: %s\n' "$*" >&2
   exit 1
 }
 
@@ -108,7 +111,7 @@ ensure_langgraph_state_dir() {
     printf '%s\n' "_root = Path(os.environ[\"INTERNAGENTS_GRAPH_ROOT\"])"
     printf '%s\n' "_spec = importlib.util.spec_from_file_location(\"_internagents_real_agent\", _root / \"agent.py\")"
     printf '%s\n' "if _spec is None or _spec.loader is None:"
-    printf '%s\n' "    raise RuntimeError(\"Unable to load InternAgentS graph entrypoint.\")"
+    printf '%s\n' "    raise RuntimeError(\"Unable to load 天玄·千枢科学发现平台 graph entrypoint.\")"
     printf '%s\n' "_module = importlib.util.module_from_spec(_spec)"
     printf '%s\n' "sys.modules[_spec.name] = _module"
     printf '%s\n' "_spec.loader.exec_module(_module)"
@@ -205,6 +208,50 @@ wait_for_url() {
 
     sleep 1
   done
+}
+
+warm_frontend_routes() {
+  if [ "$UI_WARMUP" != "1" ]; then
+    return 0
+  fi
+
+  local routes=(/ /about /config /connect /knowledge /projects /showcase /skills)
+  log "Warming ${#routes[@]} routes to avoid on-demand compile..."
+
+  local pids=()
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  local i=0
+  local route
+  for route in "${routes[@]}"; do
+    (
+      local start end
+      start="$(date +%s)"
+      if curl -sS -o /dev/null --max-time "$UI_WARMUP_TIMEOUT" "$UI_URL$route" 2>/dev/null; then
+        end="$(date +%s)"
+        printf '  ✓ %s (%ss)\n' "$route" "$((end - start))" > "$tmpdir/$i"
+      else
+        end="$(date +%s)"
+        printf '  ✗ %s (%ss, will lazy-compile on first click)\n' "$route" "$((end - start))" > "$tmpdir/$i"
+      fi
+    ) &
+    pids+=($!)
+    i=$((i + 1))
+  done
+
+  local wait_pid
+  for wait_pid in "${pids[@]}"; do
+    wait "$wait_pid" 2>/dev/null || true
+  done
+
+  local f
+  for f in "$tmpdir"/*; do
+    [ -f "$f" ] || continue
+    printf '%s' "$(cat "$f")"
+  done
+  rm -rf "$tmpdir"
+
+  log "Routes warmed."
 }
 
 read_alive_pid_file() {
@@ -418,28 +465,35 @@ start_frontend() {
   fi
 
   if port_open "$UI_PORT"; then
-    die "Port $UI_PORT is in use, but $UI_URL is not serving InternAgentS."
+    die "Port $UI_PORT is in use, but $UI_URL is not serving 天玄·千枢科学发现平台."
   fi
 
   : > "$UI_LOG"
-  log "Starting frontend on $UI_URL..."
+  local ui_script="dev"
+  if [ "$UI_TURBO" = "1" ]; then
+    ui_script="dev:turbo"
+    log "Starting frontend on $UI_URL (Turbopack)..."
+  else
+    log "Starting frontend on $UI_URL (webpack)..."
+  fi
   (
     cd "$ROOT_DIR/ui"
     INTERNAGENTS_APP_ROOT="$ROOT_DIR" \
     INTERNAGENTS_LOCAL_RUNTIME_PORT="$LOCAL_RUNTIME_PORT" \
     NEXT_PUBLIC_LANGGRAPH_DEPLOYMENT_URL="$BACKEND_URL" \
     NEXT_PUBLIC_LANGGRAPH_ASSISTANT_ID="$ASSISTANT_ID" \
-      npm run dev -- --hostname "$HOST" --port "$UI_PORT"
+      npm run "$ui_script" -- --hostname "$HOST" --port "$UI_PORT"
   ) >>"$UI_LOG" 2>&1 &
 
   UI_PID="$!"
   UI_OWNED=1
   printf '%s\n' "$UI_PID" > "$UI_PID_FILE"
   wait_for_url "Frontend" "$UI_URL" "$UI_LOG" "$UI_PID"
+  warm_frontend_routes
 }
 
 monitor_processes() {
-  log "InternAgentS is running."
+  log "天玄·千枢科学发现平台 is running."
   log "UI:      $APP_URL"
   log "Backend: $BACKEND_URL"
   log "Runtime: $LOCAL_RUNTIME_URL"

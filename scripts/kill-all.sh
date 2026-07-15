@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# kill-all.sh — force-kill every InternAgentS dev process on ports 2024/22024/3000.
+# kill-all.sh — force-kill every 天玄·千枢科学发现平台 dev process on ports 2024/22024/3000.
 #
 # Use when `scripts/dev.sh` cleanup didn't get everything — for example after
 # closing the terminal without Ctrl+C, or when the UI has spawned its own

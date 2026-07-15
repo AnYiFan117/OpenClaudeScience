@@ -122,7 +122,7 @@ export class WebRemoteAgent {
   getStreamSubmitOptions(streamConfig?: RemoteAgentStreamConfig) {
     return {
       streamMode: normalizeStreamModes(streamConfig?.modes),
-      streamSubgraphs: streamConfig?.subgraphs ?? true,
+      streamSubgraphs: streamConfig?.subgraphs ?? false,
       durability: "exit" as const,
     };
   }

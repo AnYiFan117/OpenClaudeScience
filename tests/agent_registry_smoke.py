@@ -91,6 +91,36 @@ def test_reviewer_output_schema():
     print("✅ reviewer output_schema defined")
 
 
+def test_response_format_helper_returns_schema_for_reviewer():
+    """`_response_format_for_agent` must return reviewer's output_schema so
+    `create_deep_agent` binds a structured-output tool that forces the LLM
+    to emit JSON matching {verdict, issues, suggestions}."""
+    from internagents.agent_graph import _response_format_for_agent
+    from internagents.agent_registry import get_agent_config
+
+    cfg = get_agent_config("reviewer")
+    rf = _response_format_for_agent(cfg)
+    assert rf is not None, "reviewer must have response_format wired"
+    assert rf.get("type") == "object"
+    assert "verdict" in rf.get("properties", {})
+    print("✅ _response_format_for_agent returns reviewer schema")
+
+
+def test_response_format_helper_returns_none_for_agents_without_schema():
+    """main/bookmarker/onboarding don't set output_schema, so their
+    response_format must stay None — activating structured output for
+    them would bind an unwanted extra tool and change behavior."""
+    from internagents.agent_graph import _response_format_for_agent
+    from internagents.agent_registry import get_agent_config
+
+    for name in ("main", "bookmarker", "onboarding"):
+        cfg = get_agent_config(name)
+        assert _response_format_for_agent(cfg) is None, (
+            f"{name} must not have response_format (would change tool set)"
+        )
+    print("✅ _response_format_for_agent None for main/bookmarker/onboarding")
+
+
 def test_reviewer_cannot_spawn_children():
     """Test: reviewer is configured to not spawn children."""
     from internagents.agent_registry import get_agent_config
@@ -139,6 +169,8 @@ if __name__ == "__main__":
         test_identity_adapted,
         test_metadata_yaml_parses,
         test_reviewer_output_schema,
+        test_response_format_helper_returns_schema_for_reviewer,
+        test_response_format_helper_returns_none_for_agents_without_schema,
         test_reviewer_cannot_spawn_children,
         test_bookmarker_concurrent_flag,
         test_unknown_agent_raises,

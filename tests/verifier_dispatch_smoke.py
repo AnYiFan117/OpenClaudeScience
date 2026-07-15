@@ -247,6 +247,125 @@ def test_extract_findings_from_reviewer_fallback():
     print("✅ extract_findings_from_reviewer_fallback")
 
 
+def test_extract_findings_code_fence_json():
+    """Reviewer wrapped JSON in ```json ... ``` fence — must still parse verdict.
+
+    This was the biggest source of misclassified 'warn' entries: the LLM said
+    verdict=pass inside a markdown fence, direct json.loads() failed, and the
+    old fallback slapped the whole fence text into `issues` with a fake warn.
+    """
+    fenced = (
+        "Here are my findings:\n\n"
+        "```json\n"
+        '{"verdict": "pass", "issues": [], "suggestions": []}\n'
+        "```"
+    )
+    frame = {"output_data": {}, "messages": [AIMessage(content=fenced)]}
+    findings = _extract_findings_from_reviewer(frame)
+    assert findings["verdict"] == "pass", f"Expected 'pass', got {findings['verdict']!r}"
+    assert findings["issues"] == []
+    assert "_parse_error" not in findings, "Fenced JSON must be recognized, not surfaced as parse_error"
+    print("✅ extract_findings_code_fence_json")
+
+
+def test_extract_findings_embedded_json_in_prose():
+    """Reviewer wrote a prose preamble then bare JSON — regex fallback must find it."""
+    prose_then_json = (
+        "Looking at the transcript, everything traces to visible tool outputs.\n"
+        "My verdict:\n"
+        '{"verdict": "pass", "issues": [], "suggestions": ["consider adding a summary"]}'
+    )
+    frame = {"output_data": {}, "messages": [AIMessage(content=prose_then_json)]}
+    findings = _extract_findings_from_reviewer(frame)
+    assert findings["verdict"] == "pass"
+    assert findings["suggestions"] == ["consider adding a summary"]
+    assert "_parse_error" not in findings
+    print("✅ extract_findings_embedded_json_in_prose")
+
+
+def test_extract_findings_pure_prose_no_json():
+    """Reviewer emitted only narrative — must return verdict=unknown, NOT force warn.
+
+    The old fallback did `verdict='warn'; issues=[content[:200]]` which
+    misclassified passing narratives as issues and truncated mid-sentence.
+    """
+    prose = (
+        "Looking at this transcript carefully, the agent successfully "
+        "tested the magnesium alloy calculation skills and used them "
+        "for a design task. All reported values trace to visible tool "
+        "outputs, and there are no fabrications or plan deviations "
+        "worth flagging."
+    )
+    frame = {"output_data": {}, "messages": [AIMessage(content=prose)]}
+    findings = _extract_findings_from_reviewer(frame)
+    assert findings["verdict"] == "unknown", (
+        f"Pure prose must NOT be classified as warn — got {findings['verdict']!r}"
+    )
+    assert findings["issues"] == [], "Prose must not be stuffed into issues"
+    assert findings["_parse_error"] == prose, (
+        "Full prose must be surfaced via _parse_error (no truncation)"
+    )
+    print("✅ extract_findings_pure_prose_no_json")
+
+
+def test_extract_findings_structured_response_channel():
+    """When response_format is wired in the future, extractor reads
+    state['structured_response'] as the authoritative source."""
+    frame = {
+        "output_data": {},
+        "structured_response": {
+            "verdict": "warn",
+            "issues": ["something odd"],
+            "suggestions": [],
+        },
+    }
+    findings = _extract_findings_from_reviewer(frame)
+    assert findings["verdict"] == "warn"
+    assert findings["issues"] == ["something odd"]
+    print("✅ extract_findings_structured_response_channel")
+
+
+async def test_middleware_parse_error_becomes_entry_error():
+    """End-to-end: reviewer emits unparseable prose → entry.error carries full text,
+    entry.verdict='unknown', entry.issues=[]."""
+    config = {
+        "verification": {
+            "enabled": True,
+            "checkpoint_message_threshold": 6,
+            "bookmarks_enabled": False,
+        }
+    }
+    middleware = VerifierDispatchMiddleware(agent_config_dict=config)
+
+    state = {
+        "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
+        "frame_id": "frame1",
+        "root_frame_id": "root-parse-err",
+        "frame_status": "completed",
+    }
+
+    long_prose = "A" * 500  # far more than the old 200-char slice
+    mock_reviewer_frame = {
+        "id": "reviewer1",
+        "output_data": {},
+        "messages": [AIMessage(content=long_prose)],
+    }
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=mock_reviewer_frame)
+
+    with patch("internagents.agent_graph.get_agent_graph", return_value=mock_graph):
+        result = await middleware.aafter_model(state, runtime=None)
+
+    assert "reviews" in result and len(result["reviews"]) == 1
+    entry = result["reviews"][0]
+    assert entry["verdict"] == "unknown"
+    assert entry["issues"] == []
+    assert entry.get("error"), "entry.error must be set when reviewer output was unparseable"
+    assert long_prose in entry["error"], "Full prose (not truncated) must appear in entry.error"
+    _cleanup_root_frame("root-parse-err")
+    print("✅ middleware_parse_error_becomes_entry_error")
+
+
 async def test_middleware_bookmarker_only_fires_when_enabled():
     """Bookmarker should only spawn when bookmarks_enabled=true."""
     config = {
@@ -666,6 +785,10 @@ def run_all_tests():
         test_middleware_skips_after_max_bounces,
         test_extract_findings_from_reviewer_output_data,
         test_extract_findings_from_reviewer_fallback,
+        test_extract_findings_code_fence_json,
+        test_extract_findings_embedded_json_in_prose,
+        test_extract_findings_pure_prose_no_json,
+        test_extract_findings_structured_response_channel,
     ]
 
     for test in tests:
@@ -682,6 +805,7 @@ async def run_all_async_tests():
     """Run all async tests and return success status."""
     tests = [
         test_async_middleware_injects_findings,
+        test_middleware_parse_error_becomes_entry_error,
         test_middleware_bookmarker_only_fires_when_enabled,
         test_middleware_no_cleanup_on_completed_status,
         test_middleware_cleanup_on_permanent_terminal_status,

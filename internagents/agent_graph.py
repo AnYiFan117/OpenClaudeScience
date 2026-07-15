@@ -817,6 +817,7 @@ def _create_backend_for_resource(
             max_output_bytes=resource.max_output_bytes,
             workspace_override=resource.workspace,
             read_only_roots=read_only_roots,
+            active_skills_path=ROOT_DIR / ".internagents" / "active-skills",
         )
     if resource.backend == "ssh_shell":
         return SshShellBackend(
@@ -849,6 +850,7 @@ def _create_runtime_backend(  # noqa: ANN201
             timeout=resource.timeout,
             max_output_bytes=resource.max_output_bytes,
             read_only_roots=read_only_roots,
+            active_skills_path=ROOT_DIR / ".internagents" / "active-skills",
         )
 
     root_dir = (
@@ -1473,6 +1475,25 @@ class ImageContentCompatibilityMiddleware(AgentMiddleware):
 _AGENT_GRAPH_CACHE: dict[tuple[str, str], Any] = {}
 
 
+def _response_format_for_agent(
+    agent_cfg: "internagents.agent_registry.AgentConfig",
+) -> dict[str, Any] | None:
+    """Return the JSON schema to force structured output for this agent, or None.
+
+    When set, `create_deep_agent` binds a hidden "structured output" tool that
+    the LLM must call to finish its turn. The parsed payload lands in
+    `state.structured_response`, which downstream extractors read as the
+    authoritative source (see `_extract_findings_from_reviewer`).
+
+    Only reviewer sets `output_schema` today; bookmarker/main/onboarding keep
+    it None so their behavior is unchanged.
+    """
+    schema = agent_cfg.output_schema
+    if not isinstance(schema, dict) or not schema:
+        return None
+    return schema
+
+
 def _filter_tools_by_agent(
     tools: list[Any],
     agent_config: "internagents.agent_registry.AgentConfig",
@@ -1526,6 +1547,13 @@ def _filter_middlewares_for_agent(
         List of middleware instances to use for this agent
     """
     middleware = []
+    # CancelBridgeMiddleware FIRST — registers RunControl in a global map so
+    # our monkey-patched listen_for_cancellation can drain it when the user
+    # clicks Stop. Also short-circuits future model calls if drain was already
+    # requested. Applies to every agent (main, reviewer, bookmarker, onboarding).
+    from internagents.cancel_middleware import CancelBridgeMiddleware
+    middleware.append(CancelBridgeMiddleware())
+
     # FrameRootMiddleware only for root-frame agents (main/onboarding).
     # reviewer/bookmarker are spawned as child frames via spawn_child_frame,
     # which already creates the FrameState — they don't need auto-root-creation
@@ -1651,6 +1679,7 @@ def _build_agent_graph_for(
         system_prompt=_agent_system_prompt(agent_prompt, agent_config),
         interrupt_on=interrupt_on,
         middleware=middleware,
+        response_format=_response_format_for_agent(agent_cfg),
     )
 
 
@@ -1774,6 +1803,8 @@ def create_agent_for_resource(resource: ResourceConfig):  # noqa: ANN201
         read_only_roots=_skill_read_only_roots(agent_config, resolved_skills),
     )
     middleware = list(agent_config.get("middleware") or [])
+    from internagents.cancel_middleware import CancelBridgeMiddleware
+    middleware.append(CancelBridgeMiddleware())
     middleware.append(KbSyncMiddleware(resource=resource, backend=backend))
     middleware.append(ImageContentCompatibilityMiddleware())
     middleware.append(WebSearchBudgetMiddleware())
@@ -1899,6 +1930,7 @@ def create_runtime_agent():  # noqa: ANN201
         system_prompt=_agent_system_prompt(system_prompt, agent_config),
         interrupt_on=interrupt_on,
         middleware=middleware,
+        response_format=_response_format_for_agent(agent_cfg),
     )
 
 

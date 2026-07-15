@@ -30,6 +30,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -189,13 +190,90 @@ def _format_review_prompt(messages: list, objective: str) -> str:
 
 
 
+# Reviewer output extraction — the reviewer LLM is prompted to emit JSON
+# matching `{"verdict":..., "issues":[...], "suggestions":[...]}` but empirically
+# it wraps the JSON in ```json ... ``` fences ~60% of the time and emits pure
+# prose ~40% of the time (chat-only early exit narrative). These regexes let
+# us recover the structured payload in both fenced and embedded-in-prose forms
+# before giving up.
+_CODE_FENCE_JSON_RE = re.compile(
+    r"```(?:json)?\s*(\{.*?\})\s*```",
+    re.DOTALL | re.IGNORECASE,
+)
+# Matches a JSON object that contains a "verdict" key. Non-greedy `.*?` with
+# DOTALL — we accept nested braces only in string values; if the reviewer
+# emits nested objects, JSON parsing will still validate.
+_JSON_OBJECT_WITH_VERDICT_RE = re.compile(
+    r'\{[^{}]*?"verdict"\s*:\s*"[^"]*"[^{}]*(?:\{[^{}]*\}[^{}]*)*\}',
+    re.DOTALL,
+)
+
+
+def _try_parse_reviewer_json(content: str) -> dict[str, Any] | None:
+    """Best-effort extract reviewer JSON payload from a string.
+
+    Layered attempts (fast to slow):
+      1. Direct `json.loads` on the whole string (happy path when reviewer
+         complied and emitted bare JSON)
+      2. Strip a ```json ... ``` code fence and parse the inner block
+      3. Regex for a `{...}` object containing `"verdict"` embedded in prose
+
+    Returns the parsed dict (with a `verdict` key) on success, or None if
+    no valid structured payload was found.
+    """
+    s = content.strip()
+    if not s:
+        return None
+
+    # Pattern 1: raw JSON object
+    if s.startswith("{"):
+        try:
+            data = json.loads(s)
+            if isinstance(data, dict) and "verdict" in data:
+                return data
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Pattern 2: fenced ```json ... ``` block (or plain ``` ... ```)
+    for m in _CODE_FENCE_JSON_RE.finditer(s):
+        try:
+            data = json.loads(m.group(1))
+            if isinstance(data, dict) and "verdict" in data:
+                return data
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+    # Pattern 3: JSON object with "verdict" embedded anywhere in prose
+    for m in _JSON_OBJECT_WITH_VERDICT_RE.finditer(s):
+        try:
+            data = json.loads(m.group(0))
+            if isinstance(data, dict) and "verdict" in data:
+                return data
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+    return None
+
+
 def _extract_findings_from_reviewer(reviewer_frame: dict[str, Any]) -> dict[str, Any]:
     """Extract structured findings from reviewer frame output.
 
-    Tries to parse output_data as JSON matching the reviewer output_schema,
-    falls back to raw text from last AIMessage.
+    Layered extraction (most-authoritative first):
+      1. `output_data` dict (populated if a future submit_output tool writes it)
+      2. `structured_response` dict (populated if response_format is ever wired)
+      3. Last AIMessage content via `_try_parse_reviewer_json` — handles
+         raw JSON, ```json ... ``` fenced blocks, and JSON objects embedded
+         in prose.
 
-    Returns dict with keys: verdict, issues, suggestions (best-effort)
+    When no structured output is recoverable, verdict stays `unknown` and
+    the raw content (full length, NOT truncated) is stashed under
+    `_parse_error` for the caller to move into entry.error. This avoids
+    the previous behavior of forcing verdict=warn with a 200-char slice
+    of prose in `issues` — a pattern that misclassified pass narratives
+    as issues and rendered mid-sentence garbage in the UI.
+
+    Returns dict with keys: verdict, issues, suggestions, and optionally
+    `_parse_error` (removed before the entry hits state/JSONL).
     """
     findings: dict[str, Any] = {
         "verdict": "unknown",
@@ -215,29 +293,44 @@ def _extract_findings_from_reviewer(reviewer_frame: dict[str, Any]) -> dict[str,
         if findings["verdict"] != "unknown":
             return findings
 
-    # Try last AIMessage content as JSON
+    # Try structured_response (populated when response_format is used)
+    structured = reviewer_frame.get("structured_response")
+    if isinstance(structured, dict) and "verdict" in structured:
+        findings["verdict"] = structured.get("verdict", "unknown")
+        findings["issues"] = structured.get("issues") or []
+        findings["suggestions"] = structured.get("suggestions") or []
+        if findings["verdict"] != "unknown":
+            return findings
+
+    # Try last AIMessage content as JSON — handles fenced blocks and
+    # JSON embedded in prose narratives.
     messages = reviewer_frame.get("messages", [])
     if messages:
         last_msg = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
         if last_msg is not None:
-            content = last_msg.content
-            if isinstance(content, str):
-                try:
-                    data = json.loads(content)
-                    if isinstance(data, dict):
-                        if "verdict" in data:
-                            findings["verdict"] = data.get("verdict", "unknown")
-                        if "issues" in data:
-                            findings["issues"] = data.get("issues", [])
-                        if "suggestions" in data:
-                            findings["suggestions"] = data.get("suggestions", [])
-                        return findings
-                except (json.JSONDecodeError, ValueError):
-                    pass
-            # Fallback: treat content as raw text verdict
-            if isinstance(content, str) and content.strip():
-                findings["verdict"] = "warn"
-                findings["issues"] = [content[:200]]  # First 200 chars
+            raw = last_msg.content
+            if isinstance(raw, str):
+                content_str = raw
+            elif isinstance(raw, list):
+                # Multimodal content — concatenate text blocks
+                content_str = "".join(
+                    b.get("text", "") for b in raw if isinstance(b, dict)
+                )
+            else:
+                content_str = str(raw)
+
+            parsed = _try_parse_reviewer_json(content_str)
+            if parsed is not None:
+                findings["verdict"] = parsed.get("verdict", "unknown")
+                findings["issues"] = parsed.get("issues") or []
+                findings["suggestions"] = parsed.get("suggestions") or []
+                return findings
+
+            # No structured output recoverable. Do NOT force verdict=warn
+            # and do NOT truncate — surface the raw content via
+            # `_parse_error` so the caller puts it in entry.error.
+            if content_str.strip():
+                findings["_parse_error"] = content_str
 
     return findings
 
@@ -573,6 +666,10 @@ class VerifierDispatchMiddleware(AgentMiddleware):
 
         # Extract findings + persist to JSONL (independent of state)
         findings = _extract_findings_from_reviewer(reviewer_frame)
+        # `_parse_error` is a sentinel from the extractor when reviewer
+        # output was unparseable — surface it as entry.error and drop from
+        # findings so it doesn't pollute state or JSONL.
+        parse_error = findings.pop("_parse_error", None)
         if root_frame_id:
             self._write_verdict_jsonl(
                 root_frame_id,
@@ -587,6 +684,10 @@ class VerifierDispatchMiddleware(AgentMiddleware):
             findings=findings,
             status="done",
             bounce_count=bounce_count,
+            error=(
+                "Reviewer output could not be parsed as structured JSON. "
+                "Raw content:\n\n" + parse_error
+            ) if parse_error else None,
         )
         result["reviews"] = [entry]
         _dbg(

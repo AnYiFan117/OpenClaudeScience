@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import uuid
@@ -63,6 +64,7 @@ class DynamicLocalShellBackend(SandboxBackendProtocol):
         max_output_bytes: int = 100_000,
         workspace_override: str | None = None,
         read_only_roots: list[Path] | None = None,
+        active_skills_path: Path | None = None,
     ) -> None:
         self.resource_id = resource_id
         self.fallback_root = fallback_root
@@ -72,6 +74,7 @@ class DynamicLocalShellBackend(SandboxBackendProtocol):
         self.max_output_bytes = max_output_bytes
         self.workspace_override = workspace_override
         self.read_only_roots = list(read_only_roots or [])
+        self.active_skills_path = active_skills_path
         self._sandbox_id = f"dynamic-local-{resource_id}-{uuid.uuid4().hex[:8]}"
 
     @property
@@ -111,12 +114,46 @@ class DynamicLocalShellBackend(SandboxBackendProtocol):
         configured = self._resolve_workspace_value(resource.workspace)
         return configured or self.fallback_root
 
+    def _active_skill_dirs(self) -> list[Path]:
+        """Every currently-activated skill directory (SKILL.md present)."""
+        if self.active_skills_path is None or not self.active_skills_path.is_dir():
+            return []
+        dirs: list[Path] = []
+        try:
+            entries = sorted(self.active_skills_path.iterdir())
+        except OSError:
+            return []
+        for entry in entries:
+            try:
+                resolved = entry.resolve()
+            except OSError:
+                continue
+            if resolved.is_dir() and (resolved / "SKILL.md").is_file():
+                dirs.append(resolved)
+        return dirs
+
+    def _shell_env_overrides(self) -> dict[str, str]:
+        """Env overrides for shell subprocess: prepend active skills to PYTHONPATH
+        so `import kernel` (and any other module a skill ships) works from the
+        `python` / `bash` tools without the LLM having to copy files into the
+        sandbox first."""
+        skill_dirs = self._active_skill_dirs()
+        if not skill_dirs:
+            return {}
+        parts = [str(d) for d in skill_dirs]
+        parent_pp = os.environ.get("PYTHONPATH", "")
+        if parent_pp:
+            parts.append(parent_pp)
+        return {"PYTHONPATH": os.pathsep.join(parts)}
+
     def _backend(self) -> LocalShellBackend:
         resource = self._resource()
+        env_overrides = self._shell_env_overrides()
         return LocalShellBackend(
             root_dir=self._resolve_workspace(resource),
             inherit_env=self.inherit_env,
             virtual_mode=True,
+            env=env_overrides or None,
             timeout=resource.timeout if resource is not None else self.timeout,
             max_output_bytes=(
                 resource.max_output_bytes
@@ -130,6 +167,7 @@ class DynamicLocalShellBackend(SandboxBackendProtocol):
             root_dir="/",
             inherit_env=self.inherit_env,
             virtual_mode=False,
+            env=self._shell_env_overrides() or None,
             timeout=self.timeout,
             max_output_bytes=self.max_output_bytes,
         )
@@ -533,6 +571,7 @@ class DynamicLocalShellBackendFactory:
         timeout: int = 120,
         max_output_bytes: int = 100_000,
         read_only_roots: list[Path] | None = None,
+        active_skills_path: Path | None = None,
     ) -> None:
         self.resource_id = resource_id
         self.fallback_root = fallback_root
@@ -541,6 +580,7 @@ class DynamicLocalShellBackendFactory:
         self.timeout = timeout
         self.max_output_bytes = max_output_bytes
         self.read_only_roots = read_only_roots or []
+        self.active_skills_path = active_skills_path
 
     def __call__(self, runtime: Any) -> DynamicLocalShellBackend:
         return DynamicLocalShellBackend(
@@ -552,4 +592,5 @@ class DynamicLocalShellBackendFactory:
             max_output_bytes=self.max_output_bytes,
             workspace_override=workspace_override_from_runtime(runtime),
             read_only_roots=self.read_only_roots,
+            active_skills_path=self.active_skills_path,
         )

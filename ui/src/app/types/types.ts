@@ -101,3 +101,18 @@ export interface ToolApprovalInterruptData {
   action_requests: ActionRequest[];
   review_configs?: ReviewConfig[];
 }
+
+// Reviewer subgraph output — kept in a separate `state.reviews` channel
+// from `state.messages`, so review content never enters the LLM's input.
+// Backend writer: internagents/verifier_dispatch_middleware.py:_build_review_entry
+export interface ReviewEntry {
+  id: string;
+  at_message_index: number;
+  status: "done" | "failed";
+  bounce_count: number;
+  timestamp: number;
+  verdict?: "pass" | "warn" | "fail" | "unknown";
+  issues?: string[];
+  suggestions?: string[];
+  error?: string;
+}

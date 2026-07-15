@@ -1,17 +1,27 @@
 """Verification gate middleware for InternAgentS.
 
-VerifierDispatchMiddleware implements synchronous review gating: after every
-N messages (checkpoint threshold) or on frame status transition, it blocks
-execution, spawns a reviewer child frame, extracts findings, and injects them
-back into main's message stream as a SystemMessage. This allows the main LLM
-to react to reviewer feedback in the same conversation.
+VerifierDispatchMiddleware implements synchronous review gating: at each
+turn boundary (LLM produced a final AIMessage with no tool_calls, OR LLM
+explicitly transitioned frame to completed via update_frame), it blocks
+execution, spawns a reviewer child frame, and writes the findings to a
+dedicated `reviews` state channel — NEVER to `state.messages`.
 
-Key design:
-- Synchronous (blocking) gate: main waits for reviewer to complete
-- Findings injection: reviewer output becomes a SystemMessage in main's messages
-- Bounce limit: consecutive reviewer failures skip gating after 3 failures
-- Bookmarker fire-and-forget: optional background task for keyword extraction
-- JSONL logging: verdict summary written to ~/.internagents/verdicts/<root_frame_id>.jsonl
+Key design (mirrors CS's `verification_checks` table + `verification_update`
+WebSocket event pattern):
+- Reviewer output goes to `state.reviews` (an independent list state key
+  with append-with-id-merge reducer), NOT to `state.messages`. This is the
+  critical isolation that prevents review content from ever re-entering
+  the LLM's input, avoiding loop and context pollution.
+- Synchronous (blocking) gate: main's model call awaits reviewer before
+  returning, so veto can happen before user sees the response.
+- Veto: only on `verdict=fail` (per reviewer.yaml's rubric — `warn` is
+  informational). Veto is a `frame_status="running"` state flag, NOT a
+  message the LLM can read.
+- Bounce limit: consecutive reviewer failures skip gating after N failures
+  (config `max_consecutive_bounces`, default 3).
+- Bookmarker fire-and-forget: optional background task for keyword extraction.
+- JSONL logging: verdict summary written to
+  ~/.internagents/verdicts/<root_frame_id>.jsonl (independent of state).
 """
 
 from __future__ import annotations
@@ -24,15 +34,51 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Annotated, Any, NotRequired
 
 from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.types import ModelRequest, ModelResponse
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain.agents.middleware.types import AgentState
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from internagents.frame_state import (
-    TERMINAL_FRAME_STATUSES,
-)
+
+def _review_reducer(
+    left: list[dict[str, Any]] | None,
+    right: list[dict[str, Any]] | dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Append-with-id-merge reducer for the `reviews` state channel.
+
+    Right-side entries are appended. If an entry carries an `id` that
+    matches an existing left entry, it REPLACES that entry (reserved for
+    future streaming/placeholder patterns).
+    """
+    if right is None:
+        return list(left or [])
+    if not isinstance(right, list):
+        right = [right]
+    merged = list(left or [])
+    idx_by_id = {r.get("id"): i for i, r in enumerate(merged) if isinstance(r, dict) and r.get("id")}
+    for entry in right:
+        if not isinstance(entry, dict):
+            continue
+        eid = entry.get("id")
+        if eid and eid in idx_by_id:
+            merged[idx_by_id[eid]] = entry
+        else:
+            merged.append(entry)
+            if eid:
+                idx_by_id[eid] = len(merged) - 1
+    return merged
+
+
+class ReviewState(AgentState):
+    """State schema owned by VerifierDispatchMiddleware.
+
+    Declaring this on `state_schema` is what registers `reviews` as a real
+    LangGraph channel — otherwise the middleware's writes to `state.reviews`
+    are silently discarded.
+    """
+
+    reviews: NotRequired[Annotated[list[dict[str, Any]], _review_reducer]]
 
 _logger = logging.getLogger(__name__)
 
@@ -64,11 +110,6 @@ def _frame_from_state(state: dict[str, Any]) -> dict[str, Any] | None:
 # Module-level state keyed by root_frame_id
 _VERIFICATION_BOUNCES: dict[str, int] = {}
 _BACKGROUND_BOOKMARKER_TASKS: dict[str, asyncio.Task] = {}
-# Bug fix: LangGraph's default state reducer does not persist unknown top-level
-# keys returned from middlewares, so `_last_review_msg_idx` in the returned
-# state was silently dropped and checkpoint delta stayed anchored at 0 (every
-# 3 new messages re-triggered the reviewer). Track it out-of-band instead.
-_LAST_REVIEW_IDX: dict[str, int] = {}
 
 # Pre-create verdicts dir at module import time (startup phase, before
 # LangGraph's blockbuster is active) so subsequent JSONL writes don't need
@@ -83,7 +124,6 @@ except OSError as _e:
 def _cleanup_root_frame(root_frame_id: str) -> None:
     """Clean up module-level state for a root frame."""
     _VERIFICATION_BOUNCES.pop(root_frame_id, None)
-    _LAST_REVIEW_IDX.pop(root_frame_id, None)
     task = _BACKGROUND_BOOKMARKER_TASKS.pop(root_frame_id, None)
     if task is not None:
         task.cancel()
@@ -135,55 +175,18 @@ def _format_review_prompt(messages: list, objective: str) -> str:
         lines.append(f"[{i + 1}] [{role}] {content}")
     lines.append("")
     lines.append(
-        "**IMPORTANT — this is a MID-TURN checkpoint.** The main agent is "
-        "still working. Do NOT report progress-related observations as "
-        "issues or suggestions. Specifically, DO NOT say things like:"
-    )
-    lines.append("  - 'the assistant has not yet produced any response'")
-    lines.append("  - 'the task is incomplete, please continue'")
-    lines.append("  - 'no substantive output has been produced yet'")
-    lines.append(
-        "These are expected mid-turn states, not defects. The main agent "
-        "will continue after this checkpoint."
-    )
-    lines.append("")
-    lines.append(
-        "Only report a finding when you can trace a CONCRETE defect in the "
-        "transcript above:"
-    )
-    lines.append(
-        "  - a fabricated citation, URL, quote, or number (a value that "
-        "appears in an assistant message but has no source in the transcript)"
-    )
-    lines.append(
-        "  - a claim that contradicts an earlier tool result or user input"
-    )
-    lines.append(
-        "  - a plan deviation (agent doing something the user did not ask for)"
-    )
-    lines.append("")
-    lines.append(
         'Report findings as a single JSON object on its own line with keys: '
         'verdict ("pass" | "fail" | "warn"), '
-        'issues (list of strings), suggestions (list of strings). '
-        'If nothing concrete is wrong, return verdict="pass" and empty '
-        'issues/suggestions arrays.'
+        'issues (list of strings), suggestions (list of strings).'
+    )
+    lines.append(
+        "Trace claims to the transcript above — a value that appears "
+        "fabricated or a plan deviation is a valid issue. A value you "
+        "cannot trace inside this window is NOT a finding."
     )
     return "\n".join(lines)
 
 
-def _append_to_system_message(
-    system_message: SystemMessage | None,
-    text: str,
-) -> SystemMessage:
-    """Append text to existing SystemMessage or create new one."""
-    new_content: list[dict[str, Any]] = (
-        list(system_message.content_blocks) if system_message else []
-    )
-    if new_content:
-        text = f"\n\n{text}"
-    new_content.append({"type": "text", "text": text})
-    return SystemMessage(content_blocks=new_content)
 
 
 def _extract_findings_from_reviewer(reviewer_frame: dict[str, Any]) -> dict[str, Any]:
@@ -241,13 +244,19 @@ def _extract_findings_from_reviewer(reviewer_frame: dict[str, Any]) -> dict[str,
 
 @dataclass
 class VerifierDispatchMiddleware(AgentMiddleware):
-    """Synchronous review gate middleware for main agent.
+    """Synchronous review gate for the main agent.
 
-    Checkpoints after N messages or on frame status transitions,
-    spawns a reviewer child frame, and injects findings back into main.
+    On turn boundary (frame_status ∈ {completed, pending_user_input} OR
+    end-of-turn signal on messages), spawns a reviewer child frame and
+    writes its findings to `state.reviews` — an independent state channel
+    that the LLM's input never reads. Veto (on verdict=fail) is a
+    frame_status flip; nothing about reviewer's output ever enters
+    state.messages.
     """
 
     agent_config_dict: dict[str, Any]
+
+    state_schema = ReviewState
 
     def __post_init__(self) -> None:
         """Validate config and check for multi-worker warnings."""
@@ -267,41 +276,62 @@ class VerifierDispatchMiddleware(AgentMiddleware):
         """Read verification config from agent_config_dict."""
         return self.agent_config_dict.get("verification", {})
 
+    @staticmethod
+    def _is_end_of_turn(state: dict[str, Any]) -> bool:
+        """True when the most recent message is an AIMessage with no tool_calls.
+
+        LangGraph routes to END exactly when the model emits an AIMessage
+        without tool_calls — that's the observable "turn boundary" signal.
+        We treat it as equivalent to `frame_status='completed'` for review
+        purposes and inject that status in `aafter_model`.
+        """
+        messages = state.get("messages", [])
+        if not messages:
+            return False
+        last = messages[-1]
+        if not isinstance(last, AIMessage):
+            return False
+        return not getattr(last, "tool_calls", None)
+
     def _should_checkpoint(self, state: dict[str, Any]) -> bool:
-        """Check if checkpoint should trigger based on message count or frame status."""
+        """Check if checkpoint should trigger.
+
+        Fires when either:
+          - LLM explicitly transitioned status via update_frame
+            (frame_status ∈ {completed, pending_user_input}), OR
+          - End-of-turn detected on the message stream
+            (last message is AIMessage with no tool_calls).
+        """
         config = self._get_verification_config()
 
         if not config.get("enabled", True):
             return False
 
-        messages = state.get("messages", [])
-        root_frame_id = state.get("root_frame_id") or ""
-        last_review_idx = _LAST_REVIEW_IDX.get(root_frame_id, 0)
-        threshold = config.get("checkpoint_message_threshold", 6)
-
-        # Condition 1: message delta exceeded
-        if len(messages) - last_review_idx >= threshold:
-            return True
-
-        # Condition 2: frame status transition to completed/pending_user_input
         frame_status = state.get("frame_status", "running")
         if frame_status in {"completed", "pending_user_input"}:
+            return True
+
+        if self._is_end_of_turn(state):
             return True
 
         return False
 
     def _should_suppress(self, state: dict[str, Any]) -> bool:
-        """Check if verification should be suppressed by guards."""
-        # Guard 1: skip if this is a child frame
-        if state.get("parent_frame_id") is not None:
-            return True
+        """Check if verification should be suppressed by guards.
 
-        # Guard 2: config disabled
+        Note: the "child frame" guard was intentionally dropped — under the
+        CS-aligned lifecycle (1 conversation = 1 root frame + LLM can spawn
+        work subframes), a work child that finishes SHOULD be reviewed at
+        its own boundary. Meta children (reviewer/bookmarker/onboarding)
+        never run this middleware in the first place because it's wired
+        only onto the `main` agent (`agent_graph.py:_filter_middlewares_for_agent`).
+        """
+        # Guard 1: config disabled
         config = self._get_verification_config()
         if not config.get("enabled", True):
             return True
 
-        # Guard 3: max bounces exceeded
+        # Guard 2: max bounces exceeded
         root_frame_id = state.get("root_frame_id")
         if root_frame_id:
             max_bounces = config.get("max_consecutive_bounces", 3)
@@ -309,7 +339,7 @@ class VerifierDispatchMiddleware(AgentMiddleware):
             if bounces >= max_bounces:
                 return True
 
-        # Guard 4: no active frame
+        # Guard 3: no active frame
         frame = _frame_from_state(state)
         if frame is None:
             return True
@@ -327,7 +357,6 @@ class VerifierDispatchMiddleware(AgentMiddleware):
         from internagents.agent_graph import get_agent_graph
         from internagents.frame_state import create_child_frame
 
-        root_frame_id = state.get("root_frame_id")
         frame = _frame_from_state(state)
 
         if frame is None:
@@ -368,11 +397,7 @@ class VerifierDispatchMiddleware(AgentMiddleware):
                 "input_data": child.get("input_data", {}),
             }
 
-            _dbg(
-                f"CHECKPOINT delta="
-                f"{len(parent_messages) - _LAST_REVIEW_IDX.get(root_frame_id or '', 0)} "
-                f"→ await reviewer (parent_msgs={len(parent_messages)})"
-            )
+            _dbg(f"CHECKPOINT → await reviewer (parent_msgs={len(parent_messages)})")
 
             reviewer_graph = get_agent_graph("local", "reviewer")
             invoke_config = {"configurable": {"thread_id": child["id"]}}
@@ -387,74 +412,44 @@ class VerifierDispatchMiddleware(AgentMiddleware):
 
         except Exception as e:
             _logger.exception(f"reviewer spawn failed: {e}")
-            if root_frame_id:
-                _VERIFICATION_BOUNCES[root_frame_id] = _VERIFICATION_BOUNCES.get(root_frame_id, 0) + 1
+            # Note: caller (aafter_model) owns the bounce counter — we
+            # don't increment here to avoid double-counting.
             return None
 
-    def _inject_findings(
+    def _build_review_entry(
         self,
         state: dict[str, Any],
-        findings: dict[str, Any],
+        review_id: str,
+        findings: dict[str, Any] | None,
+        *,
+        status: str,
+        bounce_count: int,
+        error: str | None = None,
     ) -> dict[str, Any]:
-        """Inject reviewer findings as a fake tool-call pair for UI visibility.
+        """Build a review dict for the `state.reviews` channel.
 
-        We insert (AIMessage with tool_calls, ToolMessage with result) — the
-        same shape a real tool invocation produces — so the frontend renders
-        review activity as a tool card ("🔍 review …") in the transcript.
+        This intentionally returns a plain dict, NOT a LangChain message —
+        reviews live in an independent state channel with its own reducer;
+        the LLM never sees this content.
 
-        Both messages carry `additional_kwargs._harness_notice=true` so any
-        UI/LLM filter can distinguish harness-injected activity from genuine
-        tool use.
-
-        `verdict=pass` is also injected so the user can see that review ran
-        (this is what the user asked for — visibility every checkpoint, not
-        just on issues).
+        `status` values:
+          - "done"   : reviewer completed, `findings` populated
+          - "failed" : reviewer spawn errored, `error` populated
         """
-        verdict = findings.get("verdict", "unknown")
-        issues = findings.get("issues") or []
-        suggestions = findings.get("suggestions") or []
-        root_frame_id = state.get("root_frame_id") or ""
-        bounce_count = _VERIFICATION_BOUNCES.get(root_frame_id, 0)
-
-        tool_call_id = f"review_{uuid.uuid4().hex[:8]}"
-
-        # AIMessage announcing the review "tool call"
-        review_ai = AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "id": tool_call_id,
-                    "name": "review",
-                    "args": {
-                        "trigger": "checkpoint",
-                        "at_message_index": len(state.get("messages", [])),
-                    },
-                }
-            ],
-            additional_kwargs={"_harness_notice": True},
-        )
-
-        # ToolMessage returning the findings, formatted as pretty JSON so
-        # the UI's tool-result renderer shows something readable.
-        tool_result_payload = {
-            "verdict": verdict,
-            "issues": issues,
-            "suggestions": suggestions,
+        entry: dict[str, Any] = {
+            "id": review_id,
+            "at_message_index": len(state.get("messages", [])),
+            "status": status,
             "bounce_count": bounce_count,
+            "timestamp": int(time.time()),
         }
-        review_result = ToolMessage(
-            tool_call_id=tool_call_id,
-            content=json.dumps(tool_result_payload, ensure_ascii=False, indent=2),
-            additional_kwargs={"_harness_notice": True},
-        )
-
-        _dbg(
-            f"INJECT review tool_call verdict={verdict} "
-            f"issues_count={len(issues)} bounce_count={bounce_count} "
-            f"tool_call_id={tool_call_id}"
-        )
-
-        return {"messages": [review_ai, review_result]}
+        if findings is not None:
+            entry["verdict"] = findings.get("verdict", "unknown")
+            entry["issues"] = findings.get("issues") or []
+            entry["suggestions"] = findings.get("suggestions") or []
+        if error is not None:
+            entry["error"] = error
+        return entry
 
     def _write_verdict_jsonl(
         self,
@@ -518,99 +513,66 @@ class VerifierDispatchMiddleware(AgentMiddleware):
         except Exception as e:
             _logger.debug(f"bookmarker spawn failed: {e}")
 
-    @staticmethod
-    def _filter_harness_notices(messages: list) -> list:
-        """Drop harness-injected messages (review tool_call/result pairs) so
-        the main LLM doesn't see them. They stay in state.messages for UI
-        rendering; only the LLM's view is trimmed.
-
-        Without this filter, the injected `AIMessage(tool_calls=[review])` +
-        `ToolMessage` pair looks to LangGraph like a completed tool round,
-        forces the model node to run again, aafter_model fires, another
-        review is spawned, and we loop until the message list explodes.
-        """
-        return [
-            m for m in messages
-            if not getattr(m, "additional_kwargs", {}).get("_harness_notice")
-        ]
-
-    def wrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
-        original = request.messages
-        filtered = self._filter_harness_notices(original)
-        if len(filtered) != len(original):
-            request = request.override(messages=filtered)
-        return handler(request)
-
-    async def awrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
-        original = request.messages
-        filtered = self._filter_harness_notices(original)
-        if len(filtered) != len(original):
-            request = request.override(messages=filtered)
-        return await handler(request)
-
-    def after_model(self, state: dict[str, Any], runtime) -> dict[str, Any] | None:
-        """Sync version (for completeness; LangGraph calls aafter_model)."""
-        # Diagnostic: confirm whether LangChain dispatches to sync after_model
-        print(
-            f"🔍 [Verifier] SYNC after_model called "
-            f"msgs={len(state.get('messages', []))} "
-            f"frame_id={state.get('frame_id', 'none')[:8] if state.get('frame_id') else 'none'}",
-            flush=True,
-        )
-        return None
-
     async def aafter_model(self, state: dict[str, Any], runtime) -> dict[str, Any] | None:
-        """Main hook: checkpoint, review, inject findings, and apply veto gate if needed.
-
-        Veto gate: if frame was transitioning to terminal (completed/pending_user_input)
-        and reviewer found issues, revert frame_status to 'running' to force another
-        iteration of the main agent.
+        """Main hook: at turn boundary, run reviewer and write findings to
+        `state.reviews` (an independent channel from state.messages). Veto
+        by flipping frame_status back to 'running' — never by injecting
+        messages the LLM could read.
         """
-        # Unconditional entry marker for debugging — remove once verified
-        print(
-            f"🔍 [Verifier] ENTER aafter_model "
+        _dbg(
+            f"ENTER aafter_model "
             f"msgs={len(state.get('messages', []))} "
-            f"last_idx={_LAST_REVIEW_IDX.get(state.get('root_frame_id') or '', 0)} "
             f"frame_id={state.get('frame_id', 'none')[:8] if state.get('frame_id') else 'none'} "
             f"parent={state.get('parent_frame_id')} "
-            f"status={state.get('frame_status')}",
-            flush=True,
+            f"status={state.get('frame_status')}"
         )
         root_frame_id = state.get("root_frame_id")
         frame_status = state.get("frame_status", "running")
 
-        # Check if we should checkpoint
+        # Permanent-terminal frames don't need review — just cleanup and exit.
+        if frame_status in {"failed", "cancelled", "blocked"}:
+            if root_frame_id:
+                _cleanup_root_frame(root_frame_id)
+                _dbg(f"CLEANUP root_frame_id={root_frame_id} (permanent-terminal)")
+            return None
+
+        # Should we run review this turn?
         if not self._should_checkpoint(state):
-            print(f"🔍 [Verifier] SKIP: _should_checkpoint returned False", flush=True)
+            _dbg("SKIP: _should_checkpoint returned False")
             return None
 
-        # Check guards
+        # Guards (config disabled / max bounces / no active frame)
         if self._should_suppress(state):
-            print(f"🔍 [Verifier] SKIP: _should_suppress returned True", flush=True)
+            _dbg("SKIP: _should_suppress returned True")
             return None
 
-        # Run reviewer
+        review_id = f"review_{uuid.uuid4().hex[:8]}"
+
+        # Run reviewer synchronously
         reviewer_frame = await self._run_reviewer(state)
 
+        result: dict[str, Any] = {}
+
         if reviewer_frame is None:
-            # Reviewer failed; increment bounce counter
+            # Bump bounces + write a "failed" review entry so the frontend
+            # can render "review failed" instead of hanging silent.
             if root_frame_id:
                 _VERIFICATION_BOUNCES[root_frame_id] = _VERIFICATION_BOUNCES.get(root_frame_id, 0) + 1
-            _dbg(f"SUPPRESS (reviewer failed or was bypassed)")
-            return None
+            bounce_count = _VERIFICATION_BOUNCES.get(root_frame_id or "", 0)
+            entry = self._build_review_entry(
+                state,
+                review_id,
+                findings=None,
+                status="failed",
+                bounce_count=bounce_count,
+                error="reviewer spawn failed",
+            )
+            result["reviews"] = [entry]
+            _dbg(f"REVIEWER failed — bounce_count={bounce_count}")
+            return result
 
-        # Extract findings
+        # Extract findings + persist to JSONL (independent of state)
         findings = _extract_findings_from_reviewer(reviewer_frame)
-
-        # Write verdict to JSONL
         if root_frame_id:
             self._write_verdict_jsonl(
                 root_frame_id,
@@ -618,48 +580,57 @@ class VerifierDispatchMiddleware(AgentMiddleware):
                 at_message_index=len(state.get("messages", [])),
             )
 
-        # Inject findings
-        result = self._inject_findings(state, findings)
+        bounce_count = _VERIFICATION_BOUNCES.get(root_frame_id or "", 0)
+        entry = self._build_review_entry(
+            state,
+            review_id,
+            findings=findings,
+            status="done",
+            bounce_count=bounce_count,
+        )
+        result["reviews"] = [entry]
+        _dbg(
+            f"RESULT verdict={findings.get('verdict')} "
+            f"issues_count={len(findings.get('issues') or [])} "
+            f"bounce_count={bounce_count} review_id={review_id}"
+        )
 
-        # Update module-level checkpoint index so next checkpoint delta anchors
-        # from this point (LangGraph state reducer doesn't persist unknown
-        # top-level keys — we tracked _last_review_msg_idx in state and it
-        # never made it back, causing every model turn to re-trigger review).
-        if root_frame_id:
-            _LAST_REVIEW_IDX[root_frame_id] = len(state.get("messages", []))
-
-        # Apply veto gate: if frame was transitioning to terminal status and findings
-        # indicate issues, revert frame_status to 'running' to force main to run again
+        # Veto only on `fail` (per reviewer.yaml rubric: warn=informational).
+        # Veto = flip frame_status back to 'running'; no message goes into
+        # state.messages, LLM never learns it was vetoed.
         verdict = findings.get("verdict", "unknown")
         config = self._get_verification_config()
         max_bounces = config.get("max_consecutive_bounces", 3)
-        bounce_count = _VERIFICATION_BOUNCES.get(root_frame_id, 0)
+
+        end_of_turn = self._is_end_of_turn(state)
+        turn_end_signal = (
+            frame_status in {"completed", "pending_user_input"} or end_of_turn
+        )
 
         if (
-            frame_status in {"completed", "pending_user_input"}
-            and verdict != "pass"
+            turn_end_signal
+            and verdict == "fail"
             and bounce_count < max_bounces
         ):
-            # Veto: revert frame_status to running to force main to run again
             result["frame_status"] = "running"
             _VERIFICATION_BOUNCES[root_frame_id] = bounce_count + 1
             _dbg(
-                f"VETO gate: frame_status was '{frame_status}', "
-                f"verdict={verdict}, reverting to 'running' "
-                f"(bounce {bounce_count + 1}/{max_bounces})"
+                f"VETO gate: end_of_turn={end_of_turn} "
+                f"frame_status={frame_status} verdict={verdict}, "
+                f"reverting to 'running' (bounce {bounce_count + 1}/{max_bounces})"
             )
+        elif end_of_turn and frame_status not in {"completed", "pending_user_input"}:
+            # No veto, end-of-turn: canonicalize to `completed` so
+            # FrameRootMiddleware revives on the next user turn.
+            result["frame_status"] = "completed"
+            _dbg(f"END-OF-TURN → frame_status=completed (verdict={verdict})")
         elif verdict != "pass":
             _dbg(
                 f"NO VETO (frame_status={frame_status}, verdict={verdict}, "
-                f"bounce={bounce_count}/{max_bounces})"
+                f"bounce={bounce_count}/{max_bounces}) — warn/unknown does not force re-loop"
             )
 
-        # Maybe spawn bookmarker (fire-and-forget)
+        # Fire-and-forget bookmarker
         await self._maybe_spawn_bookmarker(state)
-
-        # Cleanup if frame is terminal (and not vetoed back to running)
-        if root_frame_id and result.get("frame_status", frame_status) in TERMINAL_FRAME_STATUSES:
-            _cleanup_root_frame(root_frame_id)
-            _dbg(f"CLEANUP root_frame_id={root_frame_id}")
 
         return result

@@ -17,6 +17,7 @@ import type { UseStreamThread } from "@langchain/langgraph-sdk/react";
 import type {
   ChatAttachment,
   GoalState,
+  ReviewEntry,
   ThreadSkillsState,
   TodoItem,
 } from "@/app/types/types";
@@ -116,6 +117,9 @@ export type StateType = {
     page_content?: string;
   };
   ui?: any;
+  // Reviewer subgraph findings — see internagents/verifier_dispatch_middleware.py.
+  // Written by VerifierDispatchMiddleware.aafter_model; NEVER touches messages.
+  reviews?: ReviewEntry[];
 };
 
 type LangGraphContentBlock =
@@ -2371,6 +2375,7 @@ export function useChat({
     threadSkills: activeThreadSkills,
     email: scopedValues.email,
     ui: scopedValues.ui,
+    reviews: scopedValues.reviews ?? [],
     threadId,
     resourceId,
     workspaceId,

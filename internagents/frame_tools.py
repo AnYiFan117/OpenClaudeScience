@@ -3,6 +3,7 @@
 A Frame represents the active execution unit for a thread. Tools:
 - get_frame: read current frame state (objective, status, budget, elapsed)
 - update_frame: mark the current frame `completed` or `blocked`
+- spawn_subframe: delegate an independent sub-task to a child frame
 """
 
 from __future__ import annotations
@@ -130,5 +131,60 @@ def update_frame(
     return _command_with_frame(runtime, updated)
 
 
+@tool("spawn_subframe")
+async def spawn_subframe(
+    agent_name: Literal["main"],
+    objective: str,
+    runtime: ToolRuntime,
+) -> dict[str, Any]:
+    """Delegate an independent sub-task to a child work-frame and wait for its result.
+
+    The child inherits the current root_frame_id but runs in its own thread with
+    a fresh objective. This blocks until the child reaches a terminal status
+    (completed/failed/cancelled/blocked); its output_data is returned so the
+    caller can use the result.
+
+    Use when: the work is genuinely separable from your main line of reasoning
+    (an independent literature search, a self-contained computation) and would
+    otherwise clutter your working context. Do NOT use for tool wrappers or
+    single-shot lookups — the frame overhead only pays off for multi-step work.
+    """
+    current = _current_frame(runtime)
+    if current is None:
+        return {"error": "cannot spawn subframe because this thread has no parent frame", "frame": None}
+
+    if agent_name != "main":
+        return {
+            "error": f"agent_name={agent_name!r} not allowed; only 'main' is spawnable via this tool",
+            "frame": None,
+        }
+
+    from internagents.frame_service import spawn_child_frame
+
+    try:
+        child = await spawn_child_frame(
+            current,
+            agent_name=agent_name,
+            input_data={"objective": objective},
+        )
+    except Exception as exc:  # noqa: BLE001
+        from internagents.frame_middleware import _dbg
+        _dbg(f"Tool · SPAWN failed: {exc}")
+        return {"error": f"spawn_subframe failed: {exc}", "frame": None}
+
+    from internagents.frame_middleware import _dbg
+    _dbg(
+        f"Tool · SPAWN parent={current['id'][:8]} child={child['id'][:8]} "
+        f"agent={agent_name} status={child.get('status')}"
+    )
+
+    return {
+        "child_frame_id": child["id"],
+        "root_frame_id": child.get("root_frame_id"),
+        "status": child.get("status"),
+        "output_data": child.get("output_data") or {},
+    }
+
+
 def frame_tools() -> list[Any]:
-    return [get_frame, update_frame]
+    return [get_frame, update_frame, spawn_subframe]

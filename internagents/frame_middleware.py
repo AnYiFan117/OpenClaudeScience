@@ -154,56 +154,62 @@ def _extract_objective_from_messages(messages: list) -> str:
 
 
 class FrameRootMiddleware(AgentMiddleware):
-    """Ensure a running root frame exists at the start of every task.
+    """Ensure a running root frame exists at the start of every turn.
 
-    Creates a new root frame when:
-    - state has no frame_id (fresh thread), OR
-    - current frame_status is terminal (previous task completed → start new one)
+    CS-aligned semantics: 1 conversation = 1 persistent root frame.
+    - No frame in state → create one (first turn of a fresh thread)
+    - Frame exists, status is terminal → revive it (flip status back to
+      running, keep frame_id / objective / accumulated tokens intact)
+    - Frame exists, status is active → no-op
 
-    Objective is auto-extracted from the most-recent HumanMessage.
-    Frame_id is a fresh UUID (β semantics: one thread can hold many frames).
+    Objective is auto-extracted from the first HumanMessage at creation
+    time and NOT updated on revival.
     """
 
     @property
     def name(self) -> str:
         return "FrameRootMiddleware"
 
-    def _needs_new_frame(self, state: dict) -> bool:
-        current = _frame_from_state(state)
-        if current is None:
-            return True
-        return current["status"] in TERMINAL_FRAME_STATUSES
-
     def before_agent(self, state, runtime) -> dict | None:
-        if not self._needs_new_frame(state):
-            current = _frame_from_state(state)
-            if current is not None:
-                _dbg(
-                    f"Root · SKIP  frame_id={current['id'][:8]} status={current['status']} "
-                    f"(has objective, not terminal)"
-                )
-            return None
-        objective = _extract_objective_from_messages(state.get("messages", []))
-        agent_name = state.get("agent_name") or "main"
-        frame = create_root_frame(
-            agent_name=agent_name,
-            input_data={"objective": objective},
-        )
-        frame = update_frame_status(frame, "running")
+        current = _frame_from_state(state)
+
+        # Case 1: no frame at all → create root
+        if current is None:
+            objective = _extract_objective_from_messages(state.get("messages", []))
+            agent_name = state.get("agent_name") or "main"
+            frame = create_root_frame(
+                agent_name=agent_name,
+                input_data={"objective": objective},
+            )
+            frame = update_frame_status(frame, "running")
+            _dbg(
+                f"Root · CREATE frame_id={frame['id'][:8]} objective="
+                f"{objective[:80]!r}"
+            )
+            return {
+                "frame_id": frame["id"],
+                "root_frame_id": frame["root_frame_id"],
+                "parent_frame_id": None,
+                "agent_name": agent_name,
+                "frame_status": "running",
+                "tokens_used": 0,
+                "time_used_seconds": 0,
+                "input_data": frame["input_data"],
+            }
+
+        # Case 2: frame in terminal status → revive (keep frame_id + objective)
+        if current["status"] in TERMINAL_FRAME_STATUSES:
+            _dbg(
+                f"Root · REVIVE frame_id={current['id'][:8]} "
+                f"{current['status']} → running"
+            )
+            return {"frame_status": "running"}
+
+        # Case 3: frame active → no-op
         _dbg(
-            f"Root · CREATE frame_id={frame['id'][:8]} objective="
-            f"{objective[:80]!r}"
+            f"Root · SKIP  frame_id={current['id'][:8]} status={current['status']}"
         )
-        return {
-            "frame_id": frame["id"],
-            "root_frame_id": frame["root_frame_id"],
-            "parent_frame_id": None,
-            "agent_name": agent_name,
-            "frame_status": "running",
-            "tokens_used": 0,
-            "time_used_seconds": 0,
-            "input_data": frame["input_data"],
-        }
+        return None
 
     async def abefore_agent(self, state, runtime):
         return self.before_agent(state, runtime)

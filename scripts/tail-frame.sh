@@ -6,11 +6,15 @@
 #   bash scripts/tail-frame.sh backend        # only backend.log
 #   bash scripts/tail-frame.sh local-runtime  # only local-runtime.log
 #
-# Strips ANSI color escape codes and filters to lines containing 🖼️  [Frame]
+# Strips ANSI color escape codes and filters to lines containing middleware
 # lifecycle markers:
-#   Root · CREATE   — FrameRootMiddleware creates a fresh frame
-#   Ctx  · INJECT   — FrameContextMiddleware injects objective into system msg
-#   Tool · UPDATE   — update_frame tool transitions status
+#   🖼️  [Frame]     — FrameRootMiddleware / FrameContextMiddleware
+#     Root · CREATE   — FrameRootMiddleware creates a fresh frame
+#     Ctx  · INJECT   — FrameContextMiddleware injects objective into system msg
+#     Tool · UPDATE   — update_frame tool transitions status
+#   🔍 [Verifier]   — VerifierDispatchMiddleware
+#     ENTER aafter_model / CHECKPOINT → await reviewer / REVIEWER done /
+#     RESULT verdict=... / END-OF-TURN / VETO / CLEANUP
 #
 # NOTE: middleware prints usually land in backend.log (that's where the
 # agent graph actually runs). local-runtime.log is the runtime port and
@@ -29,7 +33,7 @@ strip_ansi() {
 }
 
 filter_frame() {
-  grep --line-buffered -E "🖼️ \s*\[Frame\]"
+  grep --line-buffered -E "🖼️ \s*\[Frame\]|🔍 \[Verifier\]"
 }
 
 tail_log() {

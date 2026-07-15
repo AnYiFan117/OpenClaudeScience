@@ -36,7 +36,7 @@
   "verification": {
     "enabled": true,
     "bookmarks_enabled": false,
-    "checkpoint_message_threshold": 6,
+    "checkpoint_message_threshold": 8,
     "max_consecutive_bounces": 3
   },
   "onboarding_completed_workspaces": {}

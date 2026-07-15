@@ -80,25 +80,33 @@ def test_root_middleware_skips_when_running_frame_exists():
     print("✅ root_middleware_skips_when_running_frame_exists")
 
 
-def test_root_middleware_creates_new_after_completed():
-    """FrameRootMiddleware creates a new frame after previous frame is completed (β semantics)."""
+def test_root_middleware_revives_after_completed():
+    """FrameRootMiddleware revives (keeps frame_id) after previous turn completed.
+
+    CS-aligned semantics: 1 conversation = 1 persistent root frame. When a
+    turn ends the status is `completed`; on the next user message, revive
+    the SAME frame by flipping status back to `running` — do NOT create a
+    fresh frame_id.
+    """
     middleware = FrameRootMiddleware()
     state = {
-        "messages": [HumanMessage(content="new task")],
+        "messages": [
+            HumanMessage(content="new task"),
+        ],
         "frame_id": "completed-frame",
         "frame_status": "completed",
         "agent_name": "main",
         "root_frame_id": "root-id",
     }
     result = middleware.before_agent(state, runtime=None)
-    assert result is not None, "Should create a new frame after completed"
-    assert result["frame_id"] != "completed-frame", "Should have new frame_id"
-    assert result["input_data"].get("objective") == "new task"
-    print("✅ root_middleware_creates_new_after_completed")
+    assert result is not None, "Should return an update"
+    assert "frame_id" not in result, "Must NOT create a new frame_id on revive"
+    assert result.get("frame_status") == "running", "Should flip status to running"
+    print("✅ root_middleware_revives_after_completed")
 
 
-def test_root_middleware_creates_new_after_blocked():
-    """FrameRootMiddleware creates a new frame after previous frame is blocked."""
+def test_root_middleware_revives_after_blocked():
+    """FrameRootMiddleware revives after `blocked` status same as `completed`."""
     middleware = FrameRootMiddleware()
     state = {
         "messages": [HumanMessage(content="another task")],
@@ -108,9 +116,10 @@ def test_root_middleware_creates_new_after_blocked():
         "root_frame_id": "root-id",
     }
     result = middleware.before_agent(state, runtime=None)
-    assert result is not None, "Should create a new frame after blocked"
-    assert result["frame_id"] != "blocked-frame", "Should have new frame_id"
-    print("✅ root_middleware_creates_new_after_blocked")
+    assert result is not None
+    assert "frame_id" not in result, "Must NOT create a new frame_id on revive"
+    assert result.get("frame_status") == "running"
+    print("✅ root_middleware_revives_after_blocked")
 
 
 def test_context_middleware_always_injects_when_objective_present():
@@ -145,8 +154,8 @@ if __name__ == "__main__":
         test_extract_objective_handles_multimodal_content,
         test_root_middleware_creates_on_empty_state,
         test_root_middleware_skips_when_running_frame_exists,
-        test_root_middleware_creates_new_after_completed,
-        test_root_middleware_creates_new_after_blocked,
+        test_root_middleware_revives_after_completed,
+        test_root_middleware_revives_after_blocked,
         test_context_middleware_always_injects_when_objective_present,
     ]
     passed = 0

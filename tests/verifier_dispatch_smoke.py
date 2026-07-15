@@ -19,27 +19,68 @@ from internagents.verifier_dispatch_middleware import (
 )
 
 
-def test_middleware_triggers_at_threshold():
-    """Middleware should trigger checkpoint when message delta >= threshold."""
+def test_middleware_triggers_on_terminal_status_or_end_of_turn():
+    """Checkpoint fires on: (a) LLM-set terminal status, OR (b) end-of-turn.
+
+    End-of-turn = last message is AIMessage with no tool_calls (LangGraph
+    routes to END there). Both are equivalent "the LLM produced its final
+    answer this turn" signals.
+    """
     config = {
         "verification": {
             "enabled": True,
-            "checkpoint_message_threshold": 6,
+            "checkpoint_message_threshold": 6,  # legacy, ignored now
         }
     }
     middleware = VerifierDispatchMiddleware(agent_config_dict=config)
 
-    state = {
-        "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
-        "_last_review_msg_idx": 0,  # legacy state key, no longer read by middleware
+    # (a) frame_status=completed → should trigger
+    state_done = {
+        "messages": [HumanMessage(content=f"msg{i}") for i in range(2)],
+        "frame_id": "frame1",
+        "root_frame_id": "root1",
+        "frame_status": "completed",
+    }
+    assert middleware._should_checkpoint(state_done) is True
+
+    # (b) frame_status=running but last message is AIMessage with no tool_calls
+    state_end_of_turn = {
+        "messages": [
+            HumanMessage(content="hi"),
+            AIMessage(content="final answer", tool_calls=[]),
+        ],
         "frame_id": "frame1",
         "root_frame_id": "root1",
         "frame_status": "running",
     }
+    assert middleware._should_checkpoint(state_end_of_turn) is True
 
-    should_checkpoint = middleware._should_checkpoint(state)
-    assert should_checkpoint is True, "Should checkpoint when delta >= 6"
-    print("✅ middleware_triggers_at_threshold")
+    # NEITHER (mid-tool-call: last message is HumanMessage/ToolMessage,
+    # frame_status still running) → should NOT trigger
+    state_midturn = {
+        "messages": [HumanMessage(content=f"msg{i}") for i in range(20)],
+        "frame_id": "frame1",
+        "root_frame_id": "root1",
+        "frame_status": "running",
+    }
+    assert middleware._should_checkpoint(state_midturn) is False
+
+    # AIMessage WITH tool_calls (mid-turn, LLM asked for a tool) → NOT trigger
+    state_pending_tool = {
+        "messages": [
+            HumanMessage(content="hi"),
+            AIMessage(
+                content="",
+                tool_calls=[{"id": "abc", "name": "some_tool", "args": {}}],
+            ),
+        ],
+        "frame_id": "frame1",
+        "root_frame_id": "root1",
+        "frame_status": "running",
+    }
+    assert middleware._should_checkpoint(state_pending_tool) is False
+
+    print("✅ middleware_triggers_on_terminal_status_or_end_of_turn")
 
 
 def test_middleware_skips_when_disabled():
@@ -65,8 +106,16 @@ def test_middleware_skips_when_disabled():
     print("✅ middleware_skips_when_disabled")
 
 
-def test_middleware_skips_child_frame():
-    """Middleware should not checkpoint for child frames (parent_frame_id is not None)."""
+def test_middleware_does_not_skip_child_frame():
+    """Work child frames should be reviewed at their own boundary.
+
+    The old `parent_frame_id is not None → skip` guard was intentionally
+    dropped: the middleware is wired only onto the `main` agent
+    (agent_graph._filter_middlewares_for_agent), so it never runs on
+    meta-children (reviewer/bookmarker/onboarding). When main is spawned
+    as a work child via spawn_subframe, we WANT its end-of-turn to be
+    reviewed.
+    """
     config = {
         "verification": {
             "enabled": True,
@@ -77,16 +126,15 @@ def test_middleware_skips_child_frame():
 
     state = {
         "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
-        "_last_review_msg_idx": 0,  # legacy state key, no longer read by middleware
         "frame_id": "frame1",
         "root_frame_id": "root1",
-        "parent_frame_id": "parent-frame-id",  # Child frame!
+        "parent_frame_id": "parent-frame-id",  # child frame
         "frame_status": "running",
     }
 
     should_suppress = middleware._should_suppress(state)
-    assert should_suppress is True, "Should suppress for child frames"
-    print("✅ middleware_skips_child_frame")
+    assert should_suppress is False, "Child frames should NOT be suppressed anymore"
+    print("✅ middleware_does_not_skip_child_frame")
 
 
 def test_middleware_skips_after_max_bounces():
@@ -143,7 +191,7 @@ async def test_async_middleware_injects_findings():
         "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
         "frame_id": "frame1",
         "root_frame_id": "root1",
-        "frame_status": "running",
+        "frame_status": "completed",
     }
 
     # Mock the reviewer graph returned by get_agent_graph
@@ -155,18 +203,19 @@ async def test_async_middleware_injects_findings():
         result = await middleware.aafter_model(state, runtime=None)
 
     assert result is not None, "Should return state updates"
-    assert "messages" in result, "Result should have messages"
-    assert len(result["messages"]) == 2, "Should inject AIMessage + ToolMessage pair"
+    assert "reviews" in result, "Result should have reviews (not messages — reviews are isolated from LLM input)"
+    assert len(result["reviews"]) == 1, "Should have exactly one review entry"
 
-    ai_msg, tool_msg = result["messages"]
-    from langchain_core.messages import AIMessage as _AIM, ToolMessage as _TM
-    assert isinstance(ai_msg, _AIM), f"First should be AIMessage, got {type(ai_msg)}"
-    assert isinstance(tool_msg, _TM), f"Second should be ToolMessage, got {type(tool_msg)}"
-    assert ai_msg.tool_calls and ai_msg.tool_calls[0]["name"] == "review", "AIMessage should have review tool_call"
-    assert tool_msg.tool_call_id == ai_msg.tool_calls[0]["id"], "ToolMessage id must match tool_call id"
-    assert '"verdict": "warn"' in tool_msg.content, "ToolMessage content should include verdict"
-    assert ai_msg.additional_kwargs.get("_harness_notice") is True, "AIMessage should have _harness_notice"
-    assert tool_msg.additional_kwargs.get("_harness_notice") is True, "ToolMessage should have _harness_notice"
+    entry = result["reviews"][0]
+    assert entry["status"] == "done"
+    assert entry["verdict"] == "warn"
+    assert entry["issues"] == ["hallucination detected"]
+    assert entry["suggestions"] == ["verify sources"]
+    assert entry["id"].startswith("review_")
+    assert "at_message_index" in entry
+    assert "bounce_count" in entry
+    # Critical: NO messages field — review must not enter state.messages
+    assert "messages" not in result, "reviews must NOT touch state.messages (CS isolation invariant)"
 
     # Cleanup
     _cleanup_root_frame("root1")
@@ -214,7 +263,7 @@ async def test_middleware_bookmarker_only_fires_when_enabled():
         "_last_review_msg_idx": 0,  # legacy state key, no longer read by middleware
         "frame_id": "frame1",
         "root_frame_id": "root1",
-        "frame_status": "running",
+        "frame_status": "completed",
     }
 
     # Mock reviewer frame output
@@ -237,8 +286,13 @@ async def test_middleware_bookmarker_only_fires_when_enabled():
     print("✅ middleware_bookmarker_only_fires_when_enabled")
 
 
-async def test_middleware_cleanup_on_terminal_status():
-    """Module-level state should be cleaned up when frame reaches terminal status."""
+async def test_middleware_no_cleanup_on_completed_status():
+    """`completed` fires every turn under CS-aligned lifecycle — must NOT cleanup.
+
+    If cleanup ran here, the bookmarker task would be cancelled + respawned
+    on every turn boundary. Cleanup must fire only on permanent-terminal
+    statuses (failed/cancelled/blocked).
+    """
     config = {
         "verification": {
             "enabled": True,
@@ -250,13 +304,12 @@ async def test_middleware_cleanup_on_terminal_status():
 
     state = {
         "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
-        "_last_review_msg_idx": 0,  # legacy state key, no longer read by middleware
         "frame_id": "frame1",
         "root_frame_id": "root1",
-        "frame_status": "completed",  # Terminal status
+        "frame_status": "completed",
     }
 
-    # Prime the state dict
+    # Prime bounces
     _VERIFICATION_BOUNCES["root1"] = 1
 
     mock_reviewer_frame = {
@@ -267,16 +320,18 @@ async def test_middleware_cleanup_on_terminal_status():
     mock_graph = MagicMock()
     mock_graph.ainvoke = AsyncMock(return_value=mock_reviewer_frame)
     with patch("internagents.agent_graph.get_agent_graph", return_value=mock_graph):
-
         await middleware.aafter_model(state, runtime=None)
 
-    # Verify cleanup happened
-    assert "root1" not in _VERIFICATION_BOUNCES, "Should clean up bounces dict"
-    print("✅ middleware_cleanup_on_terminal_status")
+    # Bounces should persist across turns
+    assert _VERIFICATION_BOUNCES.get("root1") == 1, "Should NOT clean up on 'completed'"
+
+    # Cleanup manually
+    _cleanup_root_frame("root1")
+    print("✅ middleware_no_cleanup_on_completed_status")
 
 
-async def test_findings_injected_as_human_message_with_auditor_prefix():
-    """Findings should be injected as HumanMessage with [Auditor] prefix and _harness_notice metadata."""
+async def test_middleware_cleanup_on_permanent_terminal_status():
+    """Cleanup fires on permanent-terminal statuses (failed/cancelled/blocked)."""
     config = {
         "verification": {
             "enabled": True,
@@ -286,12 +341,50 @@ async def test_findings_injected_as_human_message_with_auditor_prefix():
     }
     middleware = VerifierDispatchMiddleware(agent_config_dict=config)
 
+    state = {
+        "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
+        "frame_id": "frame1",
+        "root_frame_id": "root1",
+        "frame_status": "failed",  # Permanent-terminal
+    }
+
+    _VERIFICATION_BOUNCES["root1"] = 1
+
+    mock_reviewer_frame = {
+        "id": "reviewer1",
+        "output_data": {"verdict": "pass"},
+    }
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=mock_reviewer_frame)
+    with patch("internagents.agent_graph.get_agent_graph", return_value=mock_graph):
+        await middleware.aafter_model(state, runtime=None)
+
+    assert "root1" not in _VERIFICATION_BOUNCES, "Should clean up on 'failed'"
+    print("✅ middleware_cleanup_on_permanent_terminal_status")
+
+
+async def test_reviews_never_touch_state_messages():
+    """CRITICAL invariant: review findings go to state.reviews, NEVER state.messages.
+
+    This is the CS-aligned isolation that prevents review content from
+    re-entering the LLM's context — the root of the death-loop /
+    context-pollution bugs we hit before switching channels.
+    """
+    config = {
+        "verification": {
+            "enabled": True,
+            "bookmarks_enabled": False,
+        }
+    }
+    middleware = VerifierDispatchMiddleware(agent_config_dict=config)
+
     mock_reviewer_frame = {
         "id": "reviewer1",
         "output_data": {
             "verdict": "warn",
-            "issues": ["Issue 1", "Issue 2"],
-            "suggestions": ["Fix this", "And that"],
+            "issues": ["Issue 1"],
+            "suggestions": ["Fix this"],
         },
     }
 
@@ -299,7 +392,7 @@ async def test_findings_injected_as_human_message_with_auditor_prefix():
         "messages": [HumanMessage(content=f"msg{i}") for i in range(7)],
         "frame_id": "frame1",
         "root_frame_id": "root1",
-        "frame_status": "running",
+        "frame_status": "completed",
     }
 
     mock_graph = MagicMock()
@@ -309,32 +402,18 @@ async def test_findings_injected_as_human_message_with_auditor_prefix():
     ):
         result = await middleware.aafter_model(state, runtime=None)
 
-    assert result is not None, "Should return state updates"
-    assert "messages" in result, "Result should have messages"
-    assert len(result["messages"]) == 2, "Should inject AIMessage + ToolMessage pair"
+    assert result is not None
+    assert "reviews" in result and len(result["reviews"]) == 1
+    entry = result["reviews"][0]
+    assert entry["verdict"] == "warn"
+    assert entry["issues"] == ["Issue 1"]
+    assert entry["suggestions"] == ["Fix this"]
 
-    ai_msg, tool_msg = result["messages"]
-    from langchain_core.messages import AIMessage as _AIM, ToolMessage as _TM
+    # THE key invariant: nothing about the review has leaked into messages
+    assert "messages" not in result
 
-    # Verify tool-call shape (matches how tool activity is rendered in UI)
-    assert isinstance(ai_msg, _AIM), f"First should be AIMessage, got {type(ai_msg)}"
-    assert isinstance(tool_msg, _TM), f"Second should be ToolMessage, got {type(tool_msg)}"
-    assert ai_msg.tool_calls, "AIMessage must carry tool_calls"
-    assert ai_msg.tool_calls[0]["name"] == "review"
-    assert tool_msg.tool_call_id == ai_msg.tool_calls[0]["id"]
-
-    # Verify metadata flag on both messages
-    assert ai_msg.additional_kwargs.get("_harness_notice") is True
-    assert tool_msg.additional_kwargs.get("_harness_notice") is True
-
-    # Verify findings payload is embedded in ToolMessage content
-    assert '"verdict": "warn"' in tool_msg.content
-    assert "Issue 1" in tool_msg.content
-    assert "Fix this" in tool_msg.content
-
-    # Cleanup
     _cleanup_root_frame("root1")
-    print("✅ findings_injected_as_review_tool_call")
+    print("✅ reviews_never_touch_state_messages")
 
 
 async def test_veto_reverts_frame_status_to_running():
@@ -355,7 +434,7 @@ async def test_veto_reverts_frame_status_to_running():
     mock_reviewer_frame = {
         "id": "reviewer1",
         "output_data": {
-            "verdict": "warn",  # Not "pass", so veto should trigger
+            "verdict": "fail",  # only fail triggers veto (warn is informational)
             "issues": ["Found an issue"],
             "suggestions": ["Fix it"],
         },
@@ -388,12 +467,202 @@ async def test_veto_reverts_frame_status_to_running():
     print("✅ veto_reverts_frame_status_to_running")
 
 
+async def test_end_of_turn_sets_frame_status_completed():
+    """End-of-turn (running + AIMessage no tool_calls) → returned dict has frame_status='completed'.
+
+    This is what canonicalizes the status so FrameRootMiddleware sees a
+    terminal frame on the next turn and revives it (CS-aligned per-turn cycle).
+    """
+    config = {
+        "verification": {
+            "enabled": True,
+            "bookmarks_enabled": False,
+        }
+    }
+    middleware = VerifierDispatchMiddleware(agent_config_dict=config)
+
+    mock_reviewer_frame = {
+        "id": "reviewer1",
+        "output_data": {"verdict": "pass"},  # No veto
+    }
+
+    state = {
+        "messages": [
+            HumanMessage(content="hi"),
+            AIMessage(content="here is my final answer", tool_calls=[]),
+        ],
+        "frame_id": "frame1",
+        "root_frame_id": "root1",
+        "frame_status": "running",  # will be canonicalized to completed
+    }
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=mock_reviewer_frame)
+    with patch("internagents.agent_graph.get_agent_graph", return_value=mock_graph):
+        result = await middleware.aafter_model(state, runtime=None)
+
+    assert result is not None, "Should have run review + returned an update"
+    assert result.get("frame_status") == "completed", (
+        f"Expected frame_status='completed' (canonicalize on end-of-turn), got {result.get('frame_status')!r}"
+    )
+
+    _cleanup_root_frame("root1")
+    print("✅ end_of_turn_sets_frame_status_completed")
+
+
+async def test_end_of_turn_veto_reverts_to_running():
+    """End-of-turn + verdict != pass + bounces < max → veto to 'running'.
+
+    Even though the trigger was end-of-turn (frame_status still 'running'
+    coming in), the veto path should activate and set frame_status='running'
+    in the update (unchanged status, but incremented bounce). This forces
+    another model turn.
+    """
+    config = {
+        "verification": {
+            "enabled": True,
+            "bookmarks_enabled": False,
+            "max_consecutive_bounces": 3,
+        }
+    }
+    middleware = VerifierDispatchMiddleware(agent_config_dict=config)
+
+    _VERIFICATION_BOUNCES["root1"] = 0
+
+    mock_reviewer_frame = {
+        "id": "reviewer1",
+        "output_data": {
+            "verdict": "fail",  # only fail triggers veto (warn is informational)
+            "issues": ["hallucination"],
+        },
+    }
+
+    state = {
+        "messages": [
+            HumanMessage(content="hi"),
+            AIMessage(content="my answer", tool_calls=[]),
+        ],
+        "frame_id": "frame1",
+        "root_frame_id": "root1",
+        "frame_status": "running",
+    }
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=mock_reviewer_frame)
+    with patch("internagents.agent_graph.get_agent_graph", return_value=mock_graph):
+        result = await middleware.aafter_model(state, runtime=None)
+
+    assert result is not None
+    assert result.get("frame_status") == "running", (
+        f"Veto should keep status='running' to force another turn, got {result.get('frame_status')!r}"
+    )
+    assert _VERIFICATION_BOUNCES.get("root1") == 1, "Veto should increment bounces"
+
+    _cleanup_root_frame("root1")
+    print("✅ end_of_turn_veto_reverts_to_running")
+
+
+async def test_warn_verdict_does_not_veto():
+    """`warn` findings are shown but do NOT force main to re-loop.
+
+    Regression guard: earlier bug had `verdict != "pass"` as veto criterion,
+    which caused runaway loops when reviewer emitted warn on trivial chat
+    turns. Only `fail` should veto.
+    """
+    config = {
+        "verification": {
+            "enabled": True,
+            "bookmarks_enabled": False,
+            "max_consecutive_bounces": 3,
+        }
+    }
+    middleware = VerifierDispatchMiddleware(agent_config_dict=config)
+
+    _VERIFICATION_BOUNCES["root1"] = 0
+
+    mock_reviewer_frame = {
+        "id": "reviewer1",
+        "output_data": {
+            "verdict": "warn",  # warn should NOT veto
+            "issues": ["minor presentation issue"],
+        },
+    }
+
+    state = {
+        "messages": [
+            HumanMessage(content="hi"),
+            AIMessage(content="my answer", tool_calls=[]),
+        ],
+        "frame_id": "frame1",
+        "root_frame_id": "root1",
+        "frame_status": "running",
+    }
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(return_value=mock_reviewer_frame)
+    with patch("internagents.agent_graph.get_agent_graph", return_value=mock_graph):
+        result = await middleware.aafter_model(state, runtime=None)
+
+    assert result is not None
+    # warn + end-of-turn → canonicalize to completed, NOT veto to running
+    assert result.get("frame_status") == "completed", (
+        f"warn should canonicalize to 'completed' (not veto), got {result.get('frame_status')!r}"
+    )
+    # bounces must NOT increment on warn
+    assert _VERIFICATION_BOUNCES.get("root1", 0) == 0, (
+        f"warn should NOT increment bounces, got {_VERIFICATION_BOUNCES.get('root1')}"
+    )
+
+    _cleanup_root_frame("root1")
+    print("✅ warn_verdict_does_not_veto")
+
+
+async def test_reviewer_failure_writes_failed_entry():
+    """Reviewer spawn error: a review entry with status='failed' + error must
+    be written to state.reviews, and bounces bumped. No messages leak.
+    """
+    config = {
+        "verification": {
+            "enabled": True,
+            "bookmarks_enabled": False,
+        }
+    }
+    middleware = VerifierDispatchMiddleware(agent_config_dict=config)
+
+    state = {
+        "messages": [
+            HumanMessage(content="hi"),
+            AIMessage(content="my answer", tool_calls=[]),
+        ],
+        "frame_id": "frame1",
+        "root_frame_id": "root1",
+        "frame_status": "running",
+    }
+
+    mock_graph = MagicMock()
+    mock_graph.ainvoke = AsyncMock(side_effect=RuntimeError("boom"))
+    with patch("internagents.agent_graph.get_agent_graph", return_value=mock_graph):
+        result = await middleware.aafter_model(state, runtime=None)
+
+    assert result is not None
+    assert "reviews" in result and len(result["reviews"]) == 1
+    entry = result["reviews"][0]
+    assert entry["status"] == "failed"
+    assert "reviewer spawn failed" in entry.get("error", "")
+
+    assert "messages" not in result, "reviews channel must not touch state.messages"
+    assert _VERIFICATION_BOUNCES.get("root1", 0) == 1
+
+    _cleanup_root_frame("root1")
+    print("✅ reviewer_failure_writes_failed_entry")
+
+
 def run_all_tests():
     """Run all sync tests and return success status."""
     tests = [
-        test_middleware_triggers_at_threshold,
+        test_middleware_triggers_on_terminal_status_or_end_of_turn,
         test_middleware_skips_when_disabled,
-        test_middleware_skips_child_frame,
+        test_middleware_does_not_skip_child_frame,
         test_middleware_skips_after_max_bounces,
         test_extract_findings_from_reviewer_output_data,
         test_extract_findings_from_reviewer_fallback,
@@ -414,9 +683,14 @@ async def run_all_async_tests():
     tests = [
         test_async_middleware_injects_findings,
         test_middleware_bookmarker_only_fires_when_enabled,
-        test_middleware_cleanup_on_terminal_status,
-        test_findings_injected_as_human_message_with_auditor_prefix,
+        test_middleware_no_cleanup_on_completed_status,
+        test_middleware_cleanup_on_permanent_terminal_status,
+        test_reviews_never_touch_state_messages,
         test_veto_reverts_frame_status_to_running,
+        test_end_of_turn_sets_frame_status_completed,
+        test_end_of_turn_veto_reverts_to_running,
+        test_warn_verdict_does_not_veto,
+        test_reviewer_failure_writes_failed_entry,
     ]
 
     for test in tests:

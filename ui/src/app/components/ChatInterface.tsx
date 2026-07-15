@@ -44,6 +44,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { ChatMessage } from "@/app/components/ChatMessage";
+import { ReviewCard } from "@/app/components/ReviewCard";
 import {
   BatchToolApprovalInterrupt,
   ToolApprovalInterrupt,
@@ -1236,6 +1237,7 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(
       goal,
       threadSkills,
       ui,
+      reviews,
       setFiles,
       updateThreadSkills,
       error,
@@ -2826,6 +2828,59 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(
         );
       });
     }, [visibleMessages]);
+
+    // Map each review to the id of the message it belongs after.
+    // `at_message_index` from backend is the count of state.messages at review
+    // time — the anchor message sits at index `at_message_index - 1`.
+    // We inline the ReviewCard right after that message in the transcript.
+    const reviewsByAnchorId = useMemo(() => {
+      const map = new Map<string, typeof reviews>();
+      if (!reviews || reviews.length === 0) return map;
+      reviews.forEach((review) => {
+        const anchorIdx = review.at_message_index - 1;
+        const anchorMsg = messages[anchorIdx];
+        if (anchorMsg?.id) {
+          const list = map.get(anchorMsg.id) ?? [];
+          list.push(review);
+          map.set(anchorMsg.id, list);
+        }
+      });
+      return map;
+    }, [reviews, messages]);
+
+    // Loading placeholder: show a review card in "reviewing…" state at the end
+    // of the transcript while the reviewer subgraph is actively streaming AND
+    // its result hasn't landed in state.reviews yet.
+    // Heuristic: any recent streamEvent whose namespace includes "reviewer".
+    const isReviewerActive = useMemo(() => {
+      if (!streamEvents || streamEvents.length === 0) return false;
+      // Look at the last handful of events — reviewer namespace matches:
+      const lookback = Math.min(30, streamEvents.length);
+      for (let i = streamEvents.length - lookback; i < streamEvents.length; i++) {
+        const ev = streamEvents[i];
+        if (ev?.namespace?.some((part) => part.startsWith("reviewer"))) {
+          return true;
+        }
+      }
+      return false;
+    }, [streamEvents]);
+
+    // Only render loading placeholder when reviewer is actively streaming AND
+    // its result hasn't been written to state.reviews yet (i.e., no review
+    // entry newer than the earliest observed reviewer event this pass).
+    const showReviewLoading = useMemo(() => {
+      if (!isReviewerActive) return false;
+      // If reviews is empty OR the newest review is stale, show loading.
+      if (!reviews || reviews.length === 0) return true;
+      const lastEventTime = streamEvents[streamEvents.length - 1]?.at ?? 0;
+      const lastReviewTime = Math.max(
+        ...reviews.map((r) => (r.timestamp ?? 0) * 1000)
+      );
+      // Event time is in ms (Date.now()); review timestamp is unix seconds.
+      // If the newest event is more recent than the newest review, we're
+      // still waiting on the review to land.
+      return lastEventTime > lastReviewTime + 500;
+    }, [isReviewerActive, reviews, streamEvents]);
     const shouldShowThreadLoading =
       isThreadLoading && messages.length === 0 && !recoveryNotice;
     const recoveredInputMessage = useMemo(() => {
@@ -3186,31 +3241,46 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(
                   );
                   const showInlineToolCalls =
                     showRuntimeDetails || showTerminalToolIssueNotice;
+                  const reviewsForThisMessage =
+                    data.message.id
+                      ? reviewsByAnchorId.get(data.message.id) ?? []
+                      : [];
                   return (
-                    <ChatMessage
-                      key={messageKey}
-                      message={data.message}
-                      toolCalls={showInlineToolCalls ? data.toolCalls : []}
-                      showAvatar={
-                        data.message.type !== prevVisibleMessage?.type
-                      }
-                      isLoading={isLoading}
-                      actionRequestsMap={
-                        isLastMessage ? actionRequestsMap ?? undefined : undefined
-                      }
-                      reviewConfigsMap={
-                        isLastMessage ? reviewConfigsMap ?? undefined : undefined
-                      }
-                      ui={showInlineToolCalls ? messageUi : undefined}
-                      stream={stream}
-                      onResumeInterrupt={resumeInterrupt}
-                      graphId={assistant?.graph_id}
-                      showTerminalToolIssueNotice={showTerminalToolIssueNotice}
-                      onOpenAttachment={openAttachmentPreview}
-                      workspaceRoot={workspaceRoot}
-                    />
+                    <React.Fragment key={messageKey}>
+                      <ChatMessage
+                        message={data.message}
+                        toolCalls={showInlineToolCalls ? data.toolCalls : []}
+                        showAvatar={
+                          data.message.type !== prevVisibleMessage?.type
+                        }
+                        isLoading={isLoading}
+                        actionRequestsMap={
+                          isLastMessage ? actionRequestsMap ?? undefined : undefined
+                        }
+                        reviewConfigsMap={
+                          isLastMessage ? reviewConfigsMap ?? undefined : undefined
+                        }
+                        ui={showInlineToolCalls ? messageUi : undefined}
+                        stream={stream}
+                        onResumeInterrupt={resumeInterrupt}
+                        graphId={assistant?.graph_id}
+                        showTerminalToolIssueNotice={showTerminalToolIssueNotice}
+                        onOpenAttachment={openAttachmentPreview}
+                        workspaceRoot={workspaceRoot}
+                      />
+                      {reviewsForThisMessage.map((review) => (
+                        <div key={review.id} className="ml-10 mt-1">
+                          <ReviewCard entry={review} />
+                        </div>
+                      ))}
+                    </React.Fragment>
                   );
                 })}
+                {showReviewLoading && (
+                  <div className="ml-10 mt-1">
+                    <ReviewCard entry={null} />
+                  </div>
+                )}
                 {shouldShowThinkingPlaceholder && (
                   <div
                     className="mt-4 flex w-full max-w-full gap-3"

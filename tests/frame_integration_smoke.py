@@ -25,12 +25,12 @@ def test_frame_middleware_importable():
 
 
 def test_frame_tools_registered():
-    """frame_tools() must return exactly two tools."""
+    """frame_tools() must return exactly three tools (get / update / spawn)."""
     from internagents.frame_tools import frame_tools
     tools = frame_tools()
     names = [t.name for t in tools]
-    assert names == ["get_frame", "update_frame"], f"unexpected tool names: {names}"
-    print("✅ frame_tools returns get_frame / update_frame")
+    assert names == ["get_frame", "update_frame", "spawn_subframe"], f"unexpected tool names: {names}"
+    print("✅ frame_tools returns get_frame / update_frame / spawn_subframe")
 
 
 def test_agent_registry_uses_frame_middleware():

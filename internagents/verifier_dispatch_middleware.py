@@ -122,6 +122,31 @@ except OSError as _e:
     _logger.warning(f"failed to pre-create verdicts dir {_VERDICTS_DIR}: {_e}")
 
 
+# ---------------------------------------------------------------------------
+# Provider probing: whether the configured LLM supports the structured-output
+# path deepagents materializes for `response_format` (a hidden tool +
+# `tool_choice=required`). Alibaba Bailian thinking-mode rejects this with
+# a 400. Starts as `None` (unknown), flips to True on first success and
+# False on first "tool_choice not supported" 400.
+# ---------------------------------------------------------------------------
+_REVIEWER_TOOL_CHOICE_OK: bool | None = None
+
+
+def _is_tool_choice_unsupported(exc: BaseException) -> bool:
+    """Heuristic: did this exception come from the provider rejecting
+    `tool_choice=required` (or an object-form tool_choice)?
+
+    Match on the error message text — provider SDKs wrap it in different
+    exception classes (openai.BadRequestError, langchain wrappers, etc.),
+    so class-based matching would miss cases. False positives here are
+    cheap (one extra bounce); false negatives cost a permanent 400 loop.
+    """
+    msg = str(exc).lower()
+    if "tool_choice" not in msg:
+        return False
+    return any(kw in msg for kw in ("required", "object", "thinking"))
+
+
 def _cleanup_root_frame(root_frame_id: str) -> None:
     """Clean up module-level state for a root frame."""
     _VERIFICATION_BOUNCES.pop(root_frame_id, None)
@@ -446,9 +471,18 @@ class VerifierDispatchMiddleware(AgentMiddleware):
         passing metadata in `input_data` alone leaves the LLM with no prompt and
         it terminates immediately. We construct an initial_state that includes
         a HumanMessage rendering the parent's transcript.
+
+        Provider fallback: reviewer graph exists in two variants — strict
+        (with response_format → tool_choice=required) and prose (no
+        response_format, relies on prompt + `_try_parse_reviewer_json`).
+        First run tries strict; if the provider returns a 400 pointing at
+        tool_choice, `_REVIEWER_TOOL_CHOICE_OK` is flipped to False and all
+        subsequent runs go straight to the prose variant.
         """
-        from internagents.agent_graph import get_agent_graph
+        from internagents.agent_graph import get_reviewer_graph
         from internagents.frame_state import create_child_frame
+
+        global _REVIEWER_TOOL_CHOICE_OK
 
         frame = _frame_from_state(state)
 
@@ -492,9 +526,33 @@ class VerifierDispatchMiddleware(AgentMiddleware):
 
             _dbg(f"CHECKPOINT → await reviewer (parent_msgs={len(parent_messages)})")
 
-            reviewer_graph = get_agent_graph("local", "reviewer")
+            reviewer_graph = get_reviewer_graph(
+                "local", strict=(_REVIEWER_TOOL_CHOICE_OK is not False),
+            )
             invoke_config = {"configurable": {"thread_id": child["id"]}}
-            result = await reviewer_graph.ainvoke(initial_state, config=invoke_config)
+            try:
+                result = await reviewer_graph.ainvoke(initial_state, config=invoke_config)
+                # First successful strict call → cache the good news
+                if _REVIEWER_TOOL_CHOICE_OK is None:
+                    _REVIEWER_TOOL_CHOICE_OK = True
+                    _logger.info(
+                        "reviewer: strict structured output (tool_choice=required) "
+                        "confirmed working for this provider"
+                    )
+            except Exception as exc:
+                if _is_tool_choice_unsupported(exc) and _REVIEWER_TOOL_CHOICE_OK is None:
+                    _REVIEWER_TOOL_CHOICE_OK = False
+                    _logger.warning(
+                        "reviewer: provider rejected tool_choice=required "
+                        "(%s); switching to prose+parser fallback for this process.",
+                        type(exc).__name__,
+                    )
+                    prose_graph = get_reviewer_graph("local", strict=False)
+                    result = await prose_graph.ainvoke(
+                        initial_state, config=invoke_config,
+                    )
+                else:
+                    raise
 
             _dbg(
                 f"REVIEWER done frame_status="
@@ -641,8 +699,25 @@ class VerifierDispatchMiddleware(AgentMiddleware):
 
         review_id = f"review_{uuid.uuid4().hex[:8]}"
 
+        # Signal review start via the custom stream mode so the frontend can
+        # swap the "thinking" placeholder for "reviewing". `runtime.stream_writer`
+        # emits a custom-mode SSE frame immediately (unlike state writes, which
+        # are batched until aafter_model returns).
+        stream_writer = getattr(runtime, "stream_writer", None)
+        if callable(stream_writer):
+            try:
+                stream_writer({"kind": "review_started", "review_id": review_id})
+            except Exception as _exc:
+                _logger.debug(f"stream_writer(review_started) failed: {_exc}")
+
         # Run reviewer synchronously
         reviewer_frame = await self._run_reviewer(state)
+
+        if callable(stream_writer):
+            try:
+                stream_writer({"kind": "review_done", "review_id": review_id})
+            except Exception as _exc:
+                _logger.debug(f"stream_writer(review_done) failed: {_exc}")
 
         result: dict[str, Any] = {}
 

@@ -206,6 +206,7 @@ const COPY = {
     cancelChatTitleEdit: "取消更改标题",
     editChatTitle: "更改会话标题",
     thinking: "正在思考中...",
+    reviewing: "正在审查中...",
     staleRunTitle: "后台任务可能已经卡住",
     failedRunTitle: "本次运行失败，未保存最终结果",
     staleRunDescription:
@@ -942,6 +943,7 @@ const COPY = {
     cancelChatTitleEdit: "Cancel title edit",
     editChatTitle: "Edit session title",
     thinking: "Thinking...",
+    reviewing: "Reviewing...",
     staleRunTitle: "The background task may be stuck",
     failedRunTitle: "This run failed and did not save a final result",
     staleRunDescription:

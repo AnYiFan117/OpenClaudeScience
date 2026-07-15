@@ -45,6 +45,7 @@ import {
 import { toast } from "sonner";
 import { ChatMessage } from "@/app/components/ChatMessage";
 import { ReviewCard } from "@/app/components/ReviewCard";
+import { ContextMeter } from "@/app/components/ContextMeter";
 import {
   BatchToolApprovalInterrupt,
   ToolApprovalInterrupt,
@@ -1246,12 +1247,15 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(
       threadSkills,
       ui,
       reviews,
+      contextWindow,
+      contextTokensUsed,
       setFiles,
       updateThreadSkills,
       error,
       recoveryNotice,
       isLoading,
       isStreamRecovering,
+      isReviewing,
       isThreadLoading,
       interrupt,
       runStatus,
@@ -3336,7 +3340,7 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(
                     </div>
                     <div className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
                       <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      <span>{t("thinking")}</span>
+                      <span>{t(isReviewing ? "reviewing" : "thinking")}</span>
                     </div>
                   </div>
                 )}
@@ -3546,6 +3550,12 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(
               "transition-colors duration-200 ease-in-out"
             )}
           >
+            <div className="flex justify-end border-b border-border bg-muted/30">
+              <ContextMeter
+                contextWindow={contextWindow}
+                contextTokensUsed={contextTokensUsed}
+              />
+            </div>
             {(hasGoal || hasTasks || hasFiles || hasThreadSkills) && (
               <div className="flex max-h-72 flex-col overflow-y-auto border-b border-border bg-muted/50 empty:hidden">
                 {!metaOpen && (

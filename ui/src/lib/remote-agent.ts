@@ -11,6 +11,7 @@ export const TEXTUAL_COMPAT_STREAM_MODES: StreamMode[] = [
   "messages-tuple",
   "updates",
   "values",
+  "custom",
 ];
 
 export interface RemoteAgentStreamConfig {

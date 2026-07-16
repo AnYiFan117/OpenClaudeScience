@@ -1944,19 +1944,28 @@ export function useChat({
     (value: any) => {
       clearStreamEvents();
       markRunStarting();
+      // If useChat's threadId state hasn't caught up with the bootstrap-provided
+      // id yet (useStream.onThreadId only fires for SDK-generated ids, not
+      // ones we passed via submit(threadId: ...)), fall back to the ref that
+      // bootstrap set. Without this, stream.submit(null, { command: { resume
+      // }}) with an internal threadId=null will create a *new* thread — the
+      // resume target diverges from the bootstrap thread, and workspace
+      // metadata (which lived on the bootstrap thread) is lost.
+      const targetThreadId = threadId ?? pendingNewThreadTitleThreadIdRef.current;
       stream.submit(
         null,
         withStreamSubmitOptions({
           ...invalidImplicitCheckpointOptions,
           command: { resume: value },
           config: buildRunConfig(),
+          ...(targetThreadId ? { threadId: targetThreadId } : {}),
         })
       );
-      // Update thread list when resuming from interrupt
       onHistoryRevalidate?.();
     },
     [
       stream,
+      threadId,
       clearStreamEvents,
       markRunStarting,
       withStreamSubmitOptions,

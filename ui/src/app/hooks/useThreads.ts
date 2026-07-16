@@ -138,7 +138,21 @@ export function useThreads(props: {
           // first ask_user (or bailed out before any real message).
           const isOnboardingGraph =
             metadata?.graph_id === "agent_onboarding_local";
-          let title = isOnboardingGraph ? "开始使用" : "Untitled Thread";
+          // Localize the untitled fallback for non-onboarding threads.
+          // useThreads runs outside a React tree, so we can't use useI18n(); read
+          // document.documentElement.lang, which the layout bootstrap sets to
+          // 'zh-CN' or 'en'. Falls through to English if lang is undefined
+          // (SSR or pre-hydrate).
+          const langAttr =
+            typeof document !== "undefined"
+              ? document.documentElement.lang || ""
+              : "";
+          const isZh = langAttr.toLowerCase().startsWith("zh");
+          let title = isOnboardingGraph
+            ? "开始使用"
+            : isZh
+            ? "未命名对话"
+            : "Untitled Thread";
           let description = "";
 
           try {

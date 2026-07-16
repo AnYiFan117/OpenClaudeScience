@@ -125,12 +125,21 @@ export function useThreads(props: {
 
       return resolvedThreads
         .map(({ thread, values }): ThreadItem => {
-          let title = "Untitled Thread";
-          let description = "";
           const metadata =
             thread.metadata && typeof thread.metadata === "object"
               ? (thread.metadata as Record<string, unknown>)
               : {};
+          // Threads bootstrapped by OnboardingBootstrap contain only a
+          // '[System] First-run onboarding started…' kickoff — inferThreadTitle
+          // strips that and, absent any other candidate, would fall through
+          // to a generic label. Give onboarding threads a purpose-matching
+          // fallback so the sidebar reads '开始使用' instead of
+          // 'Untitled Thread' whenever the user hasn't yet answered the
+          // first ask_user (or bailed out before any real message).
+          const isOnboardingGraph =
+            metadata?.graph_id === "agent_onboarding_local";
+          let title = isOnboardingGraph ? "开始使用" : "Untitled Thread";
+          let description = "";
 
           try {
             const valuesRecord =

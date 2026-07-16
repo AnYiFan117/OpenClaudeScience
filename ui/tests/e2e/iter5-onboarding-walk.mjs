@@ -75,18 +75,23 @@ async function findAskUserOptions() {
 const MAX_ROUNDS = 8;
 for (let round = 1; round <= MAX_ROUNDS; round++) {
   log(`\n=== round ${round} ===`);
-  // Wait for any streaming to settle first (Send button visible OR ask_user visible)
-  const settledDeadline = Date.now() + 60000;
+  // Wait for an ask_user dialog to appear (streaming to complete with an interrupt).
+  // Do NOT bail on Send button visibility alone — the wizard may still be
+  // streaming its ask_user tool call and the Send button appears the moment
+  // the stream is done, before the dialog has fully rendered.
+  const settledDeadline = Date.now() + 90000;
+  let sawDialog = false;
   while (Date.now() < settledDeadline) {
     const st = await page.evaluate(() => {
-      const sendBtn = Array.from(document.querySelectorAll("button")).some((b) => (b.textContent || "").trim() === "Send");
       const stopBtn = Array.from(document.querySelectorAll("button")).some((b) => (b.textContent || "").trim() === "Stop");
       const dialog = document.querySelector("[role='dialog']") != null;
-      return { sendBtn, stopBtn, dialog };
+      return { stopBtn, dialog };
     });
-    if ((st.sendBtn && !st.stopBtn) || st.dialog) break;
+    if (st.dialog) { sawDialog = true; break; }
+    // If no dialog and not streaming for a bit, wait a bit more before giving up
     await page.waitForTimeout(500);
   }
+  if (!sawDialog) log(`⏰ waited 90s, still no dialog`);
 
   const asks = await findAskUserOptions();
   if (asks.length === 0) {
@@ -116,9 +121,19 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
   await page.waitForTimeout(500);
   await shot(`r${round}-just-clicked`);
 
-  // Wait for next state (streaming starts or new dialog appears)
-  await page.waitForTimeout(3000);
-  await shot(`r${round}-3s`);
+  // Wait for the CURRENT question to change (or dialog to disappear entirely).
+  // This is the correct signal that the wizard accepted the answer and moved on.
+  // Rapid re-clicks before this fire hit disabled buttons and get silently dropped.
+  const currentQuestion = ask.question;
+  const advanceDeadline = Date.now() + 60000;
+  while (Date.now() < advanceDeadline) {
+    const asks2 = await findAskUserOptions();
+    if (asks2.length === 0) break;
+    const latest = asks2[asks2.length - 1];
+    if (latest.question !== currentQuestion) break;
+    await page.waitForTimeout(400);
+  }
+  await shot(`r${round}-advanced`);
 }
 
 // Wait a bit more for anything to settle

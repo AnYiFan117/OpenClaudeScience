@@ -2173,7 +2173,8 @@ function HomePageContent() {
   }
 
   const activeResource = getResource(config, resourceId);
-  const activeAssistantId = activeResource?.assistantId || config.assistantId;
+  const activeAssistantId =
+    activeResource?.assistantId || config.assistantId || "agent_local";
   const isActiveLocalResource = activeResource?.id === "local";
   const isOnboardingActive =
     isActiveLocalResource && onboardingRequired === true;

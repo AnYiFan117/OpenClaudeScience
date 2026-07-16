@@ -1557,6 +1557,11 @@ export function useChat({
       // bootstrap on entering a fresh onboarding assistant.
       if (threadId) return false;
       if ((stream.messages ?? []).length > 0) return false;
+      // Don't submit before the assistant has been resolved — otherwise
+      // stream.submit() fires runs/stream with assistant_id="" and the
+      // langgraph runtime rejects it with HTTP 422. The caller resets
+      // its firedRef on our `false` so it will retry once assistant lands.
+      if (!activeAssistant?.assistant_id) return false;
       const kickoffMessage: Message = {
         id: uuidv4(),
         type: "human",
@@ -1590,6 +1595,7 @@ export function useChat({
     [
       stream,
       threadId,
+      activeAssistant,
       clearStreamEvents,
       markRunStarting,
       withStreamSubmitOptions,

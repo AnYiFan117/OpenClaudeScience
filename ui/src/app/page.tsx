@@ -360,7 +360,7 @@ function HomePageInner({
           title:
             id === NEW_THREAD_MARKER
               ? t("newThread")
-              : thread?.title || `${t("sessions")} ${id.slice(0, 8)}`,
+              : thread?.title || t("newThread"),
         };
       });
       const titleCounts = tabs.reduce((counts, tab) => {

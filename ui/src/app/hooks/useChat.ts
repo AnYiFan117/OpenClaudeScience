@@ -1803,7 +1803,7 @@ export function useChat({
       metadata: threadMetadata,
       goal: activeGoal,
       messages: scopedMessages,
-      fallback: threadId ? `会话 ${threadId.slice(0, 8)}` : "新会话",
+      fallback: "新会话",
     });
   }, [
     activeGoal,

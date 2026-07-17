@@ -172,7 +172,9 @@ export class WebRemoteAgent {
   }): Promise<Thread[]> {
     const metadataFilter = {
       ...(metadata ?? {}),
-      ...(isUuid(this.graphName) ? { assistant_id: this.graphName } : {}),
+      ...(isUuid(this.graphName)
+        ? { assistant_id: this.graphName }
+        : { graph_id: this.graphName }),
     };
 
     return this.client.threads.search({

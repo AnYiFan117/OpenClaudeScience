@@ -1389,10 +1389,17 @@ export function useChat({
     const snapshotValues = threadSnapshot?.data?.[0]?.values;
     const currentMessages = messagesFromValues(currentValues);
     const snapshotMessages = messagesFromValues(snapshotValues);
+    // Prefer snapshot only when it is strictly more complete than the
+    // live stream — i.e. stream is empty (recovery from a failed run,
+    // fresh reload before stream catches up) or snapshot has strictly
+    // more messages. Do NOT prefer snapshot just because the stream
+    // finished loading: right after review_done the stream reducer
+    // holds the latest messages while the snapshot poll is still
+    // catching up, so falling back to snapshot briefly wipes the
+    // current turn from the screen.
     const shouldUseSnapshotMessages =
       snapshotMessages.length > 0 &&
-      (!stream.isLoading ||
-        currentMessages.length === 0 ||
+      (currentMessages.length === 0 ||
         snapshotMessages.length > currentMessages.length);
 
     if (!shouldUseSnapshotMessages) {
@@ -1411,7 +1418,7 @@ export function useChat({
       ...snapshotRecord,
       messages: snapshotMessages,
     } as StateType;
-  }, [stream.isLoading, stream.values, threadSnapshot?.data]);
+  }, [stream.values, threadSnapshot?.data]);
 
   const streamScopeKey = useMemo(
     () =>
@@ -1431,10 +1438,16 @@ export function useChat({
     ]
   );
   const previousStreamScopeKey = useRef<string | null>(null);
+  // Cached last-known-good stream values — see the note in `scopedValues`
+  // below. Declared up here so the scope-change effect can reset it.
+  const lastNonEmptyValuesRef = useRef<StateType | null>(null);
 
   useEffect(() => {
     if (previousStreamScopeKey.current === streamScopeKey) return;
     previousStreamScopeKey.current = streamScopeKey;
+    // Drop the last-known-good cache when we switch threads so the new
+    // thread doesn't briefly render the previous thread's content.
+    lastNonEmptyValuesRef.current = null;
     if (!stream.isLoading) {
       clearStreamEvents();
       setVisibleError(undefined);
@@ -1741,11 +1754,57 @@ export function useChat({
       (stream.isThreadLoading ||
         (threadSnapshot?.isLoading && !threadSnapshot.data))
   );
+  // Cache the last non-empty stream values so a transient wipe (stream
+  // reducer briefly clears between review-done and parent state
+  // reconciliation, or a snapshot re-poll clears data during its
+  // in-flight window) doesn't nuke the current turn from the screen.
+  //
+  // Update policy:
+  //   - Whenever the live stream count grows, cache the live stream state
+  //     (accumulating in-flight tokens).
+  //   - Whenever the persisted snapshot is settled and has real data,
+  //     trust it as the source of truth and cache from there (this lets
+  //     the cache shrink back to reality after in-flight tokens get
+  //     consolidated by the reducer, and after a stream-end drops
+  //     stream.values.messages to 1 the next snapshot poll catches up).
+  //   - Never overwrite the cache with an emptier live stream state.
+  //
+  // The ref is declared above; scope-change resets it.
+  const effectiveMessages = messagesFromValues(effectiveStreamValues);
+  const cachedMessagesLength = lastNonEmptyValuesRef.current
+    ? messagesFromValues(lastNonEmptyValuesRef.current).length
+    : 0;
+  const snapshotValuesForCache = threadSnapshot?.data?.[0]?.values;
+  const snapshotMessagesForCache = messagesFromValues(snapshotValuesForCache);
+  if (
+    !threadSnapshot?.isLoading &&
+    snapshotMessagesForCache.length > 0 &&
+    snapshotMessagesForCache.length >= effectiveMessages.length
+  ) {
+    lastNonEmptyValuesRef.current = snapshotValuesForCache as StateType;
+  } else if (
+    effectiveMessages.length > 0 &&
+    effectiveMessages.length >= cachedMessagesLength
+  ) {
+    lastNonEmptyValuesRef.current = effectiveStreamValues;
+  }
+  const cachedMessagesLengthNow = lastNonEmptyValuesRef.current
+    ? messagesFromValues(lastNonEmptyValuesRef.current).length
+    : 0;
   const hasScopedFallbackMessages =
-    messagesFromValues(effectiveStreamValues).length > 0;
+    effectiveMessages.length > 0 || cachedMessagesLengthNow > 0;
   const scopedValues = useMemo<StateType>(() => {
-    if (!isThreadScopedStateLoading || hasScopedFallbackMessages) {
+    if (
+      lastNonEmptyValuesRef.current &&
+      effectiveMessages.length < cachedMessagesLengthNow
+    ) {
+      return lastNonEmptyValuesRef.current;
+    }
+    if (!isThreadScopedStateLoading || effectiveMessages.length > 0) {
       return effectiveStreamValues;
+    }
+    if (lastNonEmptyValuesRef.current) {
+      return lastNonEmptyValuesRef.current;
     }
 
     return {
@@ -1757,7 +1816,8 @@ export function useChat({
     };
   }, [
     effectiveStreamValues,
-    hasScopedFallbackMessages,
+    effectiveMessages.length,
+    cachedMessagesLengthNow,
     isThreadScopedStateLoading,
   ]);
   const scopedMessages = useMemo(

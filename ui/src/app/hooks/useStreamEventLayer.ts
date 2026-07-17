@@ -65,6 +65,13 @@ export function useStreamEventLayer(
   currentThreadId?: string | null
 ) {
   const [streamEvents, setStreamEvents] = useState<StreamEventRecord[]>([]);
+  // Reviewer status is tracked separately from streamEvents because the
+  // event buffer is capped at MAX_STREAM_EVENTS. A long-running review
+  // (~40s) generates enough downstream events that review_started can
+  // be evicted from the buffer before review_done arrives — leaving
+  // isReviewing derived from event history flipping back to false too
+  // early. Track it as its own state driven directly by the subscription.
+  const [isReviewing, setIsReviewing] = useState(false);
 
   const appendStreamEvent = useCallback(
     (event: RemoteAgentStreamEvent) => {
@@ -74,6 +81,13 @@ export function useStreamEventLayer(
         event.threadId !== currentThreadId
       ) {
         return;
+      }
+
+      if (event.mode === "custom") {
+        const data = event.data as { kind?: unknown } | null;
+        const kind = data?.kind;
+        if (kind === "review_started") setIsReviewing(true);
+        else if (kind === "review_done") setIsReviewing(false);
       }
 
       const record: StreamEventRecord = {
@@ -98,6 +112,7 @@ export function useStreamEventLayer(
 
   const clearStreamEvents = useCallback(() => {
     setStreamEvents([]);
+    setIsReviewing(false);
   }, []);
 
   const lastUpdateNamespace = useMemo(() => {
@@ -120,5 +135,6 @@ export function useStreamEventLayer(
     clearStreamEvents,
     interrupt,
     lastUpdateNamespace,
+    isReviewing,
   };
 }

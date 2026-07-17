@@ -2067,23 +2067,11 @@ export function useChat({
     visibleInterrupt,
   ]);
 
-  // Derive whether the reviewer is currently running by scanning the
-  // recent custom-mode stream events for the last review_started /
-  // review_done pair. Backend emits these from VerifierDispatchMiddleware
-  // via runtime.stream_writer. The values-mode `state.reviews` write only
-  // lands after the reviewer completes, so this is the only real-time
-  // signal we have.
-  const isReviewing = useMemo(() => {
-    for (let i = streamEventLayer.streamEvents.length - 1; i >= 0; i--) {
-      const event = streamEventLayer.streamEvents[i];
-      if (event.mode !== "custom") continue;
-      const data = event.data as { kind?: unknown } | null;
-      const kind = data?.kind;
-      if (kind === "review_started") return true;
-      if (kind === "review_done") return false;
-    }
-    return false;
-  }, [streamEventLayer.streamEvents]);
+  // Reviewer status is tracked in useStreamEventLayer as its own state
+  // (see the comment there): the event buffer is capped, and long reviews
+  // evict review_started before review_done arrives, so derived-from-buffer
+  // logic was flipping back to false ~1s after the review actually started.
+  const isReviewing = streamEventLayer.isReviewing;
 
   return {
     stream,

@@ -14,8 +14,6 @@ import {
   Save,
   Server,
   ServerCog,
-  Shield,
-  ShieldCheck,
   Sparkles,
   Sun,
   type LucideIcon,
@@ -41,7 +39,6 @@ import {
   appReturnHrefFromSearchParams,
 } from "@/app/utils/navigationContext";
 
-type AuthorizationMode = "auto" | "write" | "all";
 type ModelSelectionMode = "auto" | "manual";
 type ModelProvider = "openai_compatible";
 type OnboardingMissing = "openaiCompatibleApiKey";
@@ -59,7 +56,6 @@ interface ConfigResponse {
   openaiCompatibleApiKey: string;
   openaiCompatibleApiKeySet: boolean;
   openaiCompatibleApiKeyPreview: string;
-  authorizationMode: AuthorizationMode;
   language: UiLanguage;
   desktopMode: boolean;
   needsOnboarding: boolean;
@@ -99,41 +95,12 @@ const DEFAULT_CONFIG: ConfigResponse = {
   openaiCompatibleApiKey: "",
   openaiCompatibleApiKeySet: false,
   openaiCompatibleApiKeyPreview: "",
-  authorizationMode: "auto",
   language: "zh",
   desktopMode: false,
   needsOnboarding: false,
   onboardingSkipped: false,
   missing: [],
 };
-
-const AUTHORIZATION_OPTIONS: Array<{
-  id: AuthorizationMode;
-  title: CopyKey;
-  badge?: CopyKey;
-  description: CopyKey;
-  detail: CopyKey;
-}> = [
-  {
-    id: "auto",
-    title: "authAutoTitle",
-    badge: "recommended",
-    description: "authAutoDescription",
-    detail: "authAutoDetail",
-  },
-  {
-    id: "write",
-    title: "authWriteTitle",
-    description: "authWriteDescription",
-    detail: "authWriteDetail",
-  },
-  {
-    id: "all",
-    title: "authAllTitle",
-    description: "authAllDescription",
-    detail: "authAllDetail",
-  },
-];
 
 const THEME_OPTIONS: Array<{
   id: ThemeMode;
@@ -187,12 +154,6 @@ const SETTINGS_SECTIONS: Array<{
     title: "compute",
     description: "computeDescription",
     icon: ServerCog,
-  },
-  {
-    id: "settings-authorization",
-    title: "authorization",
-    description: "authorizationDescription",
-    icon: ShieldCheck,
   },
   {
     id: "settings-appearance",
@@ -264,18 +225,15 @@ function ConfigPageContent() {
       config.openaiCompatibleModel !== savedConfig.openaiCompatibleModel ||
       config.model !== savedConfig.model ||
       config.modelSelectionMode !== savedConfig.modelSelectionMode ||
-      config.authorizationMode !== savedConfig.authorizationMode ||
       config.language !== savedConfig.language
     );
   }, [
-    config.authorizationMode,
     config.model,
     config.modelSelectionMode,
     config.openaiCompatibleApiKey,
     config.openaiCompatibleBaseUrl,
     config.openaiCompatibleModel,
     config.language,
-    savedConfig.authorizationMode,
     savedConfig.model,
     savedConfig.modelSelectionMode,
     savedConfig.openaiCompatibleBaseUrl,
@@ -288,17 +246,14 @@ function ConfigPageContent() {
       config.openaiCompatibleBaseUrl !== savedConfig.openaiCompatibleBaseUrl ||
       config.openaiCompatibleModel !== savedConfig.openaiCompatibleModel ||
       config.model !== savedConfig.model ||
-      config.modelSelectionMode !== savedConfig.modelSelectionMode ||
-      config.authorizationMode !== savedConfig.authorizationMode
+      config.modelSelectionMode !== savedConfig.modelSelectionMode
     );
   }, [
-    config.authorizationMode,
     config.model,
     config.modelSelectionMode,
     config.openaiCompatibleApiKey,
     config.openaiCompatibleBaseUrl,
     config.openaiCompatibleModel,
-    savedConfig.authorizationMode,
     savedConfig.model,
     savedConfig.modelSelectionMode,
     savedConfig.openaiCompatibleBaseUrl,
@@ -392,7 +347,6 @@ function ConfigPageContent() {
             : config.openaiCompatibleApiKey.trim() || undefined,
           openaiCompatibleBaseUrl:
             config.openaiCompatibleBaseUrl.trim() || undefined,
-          authorizationMode: config.authorizationMode,
           language: config.language,
           onboardingSkipped: options.onboardingSkipped === true,
         }),
@@ -1121,69 +1075,6 @@ function ConfigPageContent() {
                 </div>
 
                 <ComputeSettingsCard />
-              </section>
-
-              <section
-                id="settings-authorization"
-                className="scroll-mt-24 rounded-lg border border-border bg-card p-5 shadow-sm"
-              >
-                <div className="mb-4 flex items-start gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-background text-primary">
-                    <ShieldCheck className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <h2 className="text-base font-semibold">
-                      {t("authorization")}
-                    </h2>
-                    <div className="mt-1 text-sm text-muted-foreground">
-                      {t("authorizationHelp")}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-3">
-                  {AUTHORIZATION_OPTIONS.map((option) => {
-                    const active = config.authorizationMode === option.id;
-                    return (
-                      <button
-                        key={option.id}
-                        type="button"
-                        onClick={() =>
-                          setConfig((current) => ({
-                            ...current,
-                            authorizationMode: option.id,
-                          }))
-                        }
-                        className={cn(
-                          "flex min-h-44 flex-col rounded-lg border bg-background p-4 text-left transition hover:border-primary/50 hover:bg-accent dark:hover:border-[hsl(var(--primary)/0.5)]",
-                          active
-                            ? "border-primary ring-2 ring-primary/20 dark:border-[hsl(var(--primary))] dark:ring-[hsl(var(--primary)/0.2)]"
-                            : "border-border"
-                        )}
-                      >
-                        <div className="mb-4 flex items-center justify-between gap-2">
-                          <div className="flex h-9 w-9 items-center justify-center rounded-md border border-border bg-card text-primary">
-                            <Shield className="h-4 w-4" />
-                          </div>
-                          {option.badge && (
-                            <span className="rounded-full bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground dark:bg-[hsl(var(--primary))] dark:text-[hsl(var(--primary-foreground))]">
-                              {t(option.badge)}
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-sm font-semibold">
-                          {t(option.title)}
-                        </div>
-                        <div className="mt-2 text-sm text-foreground">
-                          {t(option.description)}
-                        </div>
-                        <div className="mt-3 text-xs leading-5 text-muted-foreground">
-                          {t(option.detail)}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
               </section>
 
               <section

@@ -2885,6 +2885,133 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(
       return map;
     }, [reviews, messages]);
 
+    // Build frameOutputMap by scanning every tool result in the thread.
+    // Sources:
+    //   - delegate_subframes result: initial descriptors (status="running", name)
+    //   - collect_subframes result: terminal frames (status + output_data)
+    //   - wait_for_notification result: notifications[].payload with completion
+    //     payloads carrying terminal state.
+    // Keyed by frame_id. Later observations overwrite earlier ones so terminal
+    // state wins over the initial running descriptor.
+    const frameOutputMap = useMemo(() => {
+      const map = new Map<
+        string,
+        {
+          status: string;
+          output?: Record<string, unknown>;
+          name?: string;
+          agent_name?: string;
+        }
+      >();
+      const parse = (raw: unknown): unknown => {
+        if (typeof raw !== "string") return raw;
+        try {
+          return JSON.parse(raw);
+        } catch {
+          return null;
+        }
+      };
+      const rank = (s: string | undefined): number => {
+        // higher = more terminal; used to avoid a running descriptor
+        // overwriting a completion that already landed.
+        if (s === "completed" || s === "failed") return 3;
+        if (s === "cancelled" || s === "interrupted") return 2;
+        if (s === "running") return 1;
+        return 0;
+      };
+      const upsert = (
+        frameId: unknown,
+        entry: {
+          status?: unknown;
+          output?: unknown;
+          name?: unknown;
+          agent_name?: unknown;
+        }
+      ) => {
+        if (typeof frameId !== "string" || !frameId) return;
+        const prev = map.get(frameId);
+        const nextStatus =
+          typeof entry.status === "string" ? entry.status : prev?.status ?? "";
+        if (rank(nextStatus) < rank(prev?.status)) return;
+        map.set(frameId, {
+          status: nextStatus || prev?.status || "running",
+          output:
+            (entry.output as Record<string, unknown> | undefined) ??
+            prev?.output,
+          name:
+            (typeof entry.name === "string" && entry.name) ||
+            prev?.name,
+          agent_name:
+            (typeof entry.agent_name === "string" && entry.agent_name) ||
+            prev?.agent_name,
+        });
+      };
+
+      const rawMessages = messages as Array<Record<string, any>>;
+      for (const msg of rawMessages) {
+        if (msg?.type !== "tool" && msg?.role !== "tool") continue;
+        const name = (msg.name as string | undefined) || "";
+        if (
+          name !== "delegate_subframes" &&
+          name !== "collect_subframes" &&
+          name !== "stop_subframes" &&
+          name !== "wait_for_notification"
+        ) {
+          continue;
+        }
+        const parsed = parse(msg.content) as
+          | Record<string, unknown>
+          | null;
+        if (!parsed || typeof parsed !== "object") continue;
+
+        // delegate_subframes / collect_subframes / stop_subframes shape:
+        //   { frames: [{frame_id, status, output_data?, name?, agent_name?}, ...] }
+        const frames = (parsed as Record<string, unknown>).frames;
+        if (Array.isArray(frames)) {
+          for (const f of frames as Array<Record<string, unknown>>) {
+            upsert(f.frame_id, {
+              status: f.status,
+              output: f.output_data,
+              name: f.name,
+              agent_name: f.agent_name,
+            });
+          }
+        }
+
+        // wait_for_notification shape:
+        //   { status: 'received', notifications: [
+        //       {notification_type, sender_frame_id, payload, ...}
+        //   ]}
+        const notifications = (parsed as Record<string, unknown>).notifications;
+        if (Array.isArray(notifications)) {
+          for (const n of notifications as Array<Record<string, unknown>>) {
+            const ntype = n.notification_type as string | undefined;
+            const sender = n.sender_frame_id as string | undefined;
+            const payload = n.payload as
+              | Record<string, unknown>
+              | undefined;
+            if (!sender) continue;
+            if (ntype === "completion" && payload) {
+              upsert(sender, {
+                status:
+                  (payload.status as string | undefined) ?? "completed",
+                output: payload.output_data,
+                name: payload.name,
+                agent_name: payload.agent_name,
+              });
+            } else if (ntype === "child_landed" && payload) {
+              upsert(sender, {
+                status: "running",
+                name: payload.name,
+                agent_name: payload.agent_name,
+              });
+            }
+          }
+        }
+      }
+      return map;
+    }, [messages]);
+
     // Loading placeholder: show a review card in "reviewing…" state at the end
     // of the transcript while the reviewer subgraph is actively streaming AND
     // its result hasn't landed in state.reviews yet.
@@ -3292,6 +3419,7 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(
                       <ChatMessage
                         message={data.message}
                         toolCalls={showInlineToolCalls ? data.toolCalls : []}
+                        frameOutputMap={frameOutputMap}
                         showAvatar={
                           data.message.type !== prevVisibleMessage?.type
                         }
@@ -3450,6 +3578,7 @@ export const ChatInterface = React.memo<ChatInterfaceProps>(
                               key={`intermediate-${data.message.id ?? index}`}
                               message={data.message}
                               toolCalls={data.toolCalls}
+                              frameOutputMap={frameOutputMap}
                               showAvatar={false}
                               isLoading={false}
                               runtimeMuted

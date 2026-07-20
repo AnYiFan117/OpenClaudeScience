@@ -36,6 +36,19 @@ interface ChatMessageProps {
   showTerminalToolIssueNotice?: boolean;
   onOpenAttachment?: (path: string) => void;
   workspaceRoot?: string;
+  // Frame results keyed by frame_id, populated by ChatInterface by scanning
+  // all thread messages for delegate/collect/wait_for_notification tool
+  // results. Used to fill in the output side of cards created from
+  // delegate_subframes tool calls.
+  frameOutputMap?: Map<
+    string,
+    {
+      status: string;
+      output?: Record<string, unknown>;
+      name?: string;
+      agent_name?: string;
+    }
+  >;
 }
 
 export const ChatMessage = React.memo<ChatMessageProps>(
@@ -54,6 +67,7 @@ export const ChatMessage = React.memo<ChatMessageProps>(
     showTerminalToolIssueNotice,
     onOpenAttachment,
     workspaceRoot,
+    frameOutputMap,
   }) => {
     const { t } = useLanguage();
     const isUser = message.type === "human";
@@ -82,29 +96,105 @@ export const ChatMessage = React.memo<ChatMessageProps>(
         (toolCall.status === "error" || toolCall.status === "interrupted")
     );
     const subAgents = useMemo(() => {
-      return toolCalls
-        .filter((toolCall: ToolCall) => {
-          return (
-            toolCall.name === "task" &&
-            toolCall.args["subagent_type"] &&
-            toolCall.args["subagent_type"] !== "" &&
-            toolCall.args["subagent_type"] !== null
-          );
-        })
-        .map((toolCall: ToolCall) => {
+      const cards: SubAgent[] = [];
+
+      // Legacy deepagents `task` tool subagents (kept for compatibility if
+      // some skills still declare `subagents`).
+      for (const toolCall of toolCalls) {
+        if (
+          toolCall.name === "task" &&
+          toolCall.args["subagent_type"] &&
+          toolCall.args["subagent_type"] !== "" &&
+          toolCall.args["subagent_type"] !== null
+        ) {
           const subagentType = (toolCall.args as Record<string, unknown>)[
             "subagent_type"
           ] as string;
-          return {
+          cards.push({
             id: toolCall.id,
             name: toolCall.name,
             subAgentName: subagentType,
             input: toolCall.args,
             output: toolCall.result ? { result: toolCall.result } : undefined,
             status: toolCall.status,
-          } as SubAgent;
-        });
-    }, [toolCalls]);
+          } as SubAgent);
+        }
+      }
+
+      // CS-style async `delegate_subframes(requests=[...])` — one card per
+      // request in the batch. Frame IDs come from the tool's initial result
+      // (running descriptors); status/output later filled in by frameOutputMap
+      // once collect_subframes / wait_for_notification lands.
+      for (const toolCall of toolCalls) {
+        if (toolCall.name !== "delegate_subframes") continue;
+        const args = toolCall.args as Record<string, unknown> | undefined;
+        const requests = Array.isArray(args?.requests)
+          ? (args!.requests as Array<Record<string, unknown>>)
+          : [];
+        // Parse the tool's own result to align request[i] with frame_id[i].
+        let framesFromResult: Array<Record<string, unknown>> = [];
+        try {
+          const parsedResult =
+            typeof toolCall.result === "string"
+              ? JSON.parse(toolCall.result)
+              : (toolCall.result as unknown);
+          if (
+            parsedResult &&
+            typeof parsedResult === "object" &&
+            Array.isArray((parsedResult as Record<string, unknown>).frames)
+          ) {
+            framesFromResult = (parsedResult as {
+              frames: Array<Record<string, unknown>>;
+            }).frames;
+          }
+        } catch {
+          // If we can't parse yet (still streaming) we still emit cards
+          // keyed by index without frame_id — output stays undefined.
+        }
+        const pairCount = Math.max(requests.length, framesFromResult.length);
+        for (let i = 0; i < pairCount; i++) {
+          const req = requests[i] || {};
+          const frame = framesFromResult[i] || {};
+          const frameId =
+            typeof frame.frame_id === "string" ? frame.frame_id : "";
+          const cardName =
+            (typeof req.name === "string" && req.name) ||
+            (typeof frame.name === "string" && frame.name) ||
+            (typeof req.agent_name === "string" && req.agent_name) ||
+            "subagent";
+          const objective =
+            (typeof req.objective === "string" && req.objective) ||
+            (typeof req.task === "string" && req.task) ||
+            "";
+
+          // Look up terminal state from frameOutputMap (populated by
+          // collect_subframes / wait_for_notification completions).
+          const observed = frameId
+            ? frameOutputMap?.get(frameId)
+            : undefined;
+          const derivedStatus: SubAgent["status"] = (() => {
+            const s = observed?.status ?? (frame.status as string | undefined);
+            if (s === "completed") return "completed";
+            if (s === "failed" || s === "error") return "error";
+            if (s === "running") return "active";
+            if (!s) return "pending";
+            return "active";
+          })();
+          const output = observed?.output;
+
+          cards.push({
+            id: frameId || `${toolCall.id}:${i}`,
+            name: "delegate_subframes",
+            subAgentName: String(cardName),
+            input: { objective, ...req },
+            output: output ? (output as Record<string, unknown>) : undefined,
+            status: derivedStatus,
+          });
+        }
+      }
+
+      return cards;
+    }, [toolCalls, frameOutputMap]);
 
     const [expandedSubAgents, setExpandedSubAgents] = useState<
       Record<string, boolean>
@@ -226,6 +316,7 @@ export const ChatMessage = React.memo<ChatMessageProps>(
             <div className="mt-4 flex w-full flex-col">
               {toolCalls.map((toolCall: ToolCall) => {
                 if (toolCall.name === "task") return null;
+                if (toolCall.name === "delegate_subframes") return null;
                 const toolCallGenUiComponent = ui?.find(
                   (u) => u.metadata?.tool_call_id === toolCall.id
                 );

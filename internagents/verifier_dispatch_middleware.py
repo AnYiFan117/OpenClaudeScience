@@ -129,22 +129,56 @@ except OSError as _e:
 # a 400. Starts as `None` (unknown), flips to True on first success and
 # False on first "tool_choice not supported" 400.
 # ---------------------------------------------------------------------------
-_REVIEWER_TOOL_CHOICE_OK: bool | None = None
+def _reviewer_strict_default() -> bool | None:
+    """Initial value for `_REVIEWER_TOOL_CHOICE_OK` — None means "unknown, probe",
+    False means "skip strict, go prose+parser".
+
+    Custom Anthropic proxies (set via `ANTHROPIC_BASE_URL`) often reject the
+    fields langchain-anthropic materializes for `response_format` (e.g.
+    `output_config.format: Extra inputs are not permitted`), same class of
+    incompatibility as prompt caching. Skip strict pre-emptively so we don't
+    burn the first review on a guaranteed 400.
+
+    Override with `INTERNAGENTS_REVIEWER_ALLOW_STRICT={1|0}` when using a real
+    Anthropic API or a proxy that does support the field.
+    """
+    override = os.environ.get("INTERNAGENTS_REVIEWER_ALLOW_STRICT")
+    if override is not None:
+        return None if override.strip().lower() in {"1", "true", "yes", "on"} else False
+    return False if os.environ.get("ANTHROPIC_BASE_URL") else None
+
+
+_REVIEWER_TOOL_CHOICE_OK: bool | None = _reviewer_strict_default()
 
 
 def _is_tool_choice_unsupported(exc: BaseException) -> bool:
-    """Heuristic: did this exception come from the provider rejecting
-    `tool_choice=required` (or an object-form tool_choice)?
+    """Heuristic: did this exception come from the provider rejecting the
+    structured-output path (tool_choice + hidden tool, OR the field
+    langchain-anthropic sends when `response_format` is set)?
 
     Match on the error message text — provider SDKs wrap it in different
     exception classes (openai.BadRequestError, langchain wrappers, etc.),
     so class-based matching would miss cases. False positives here are
     cheap (one extra bounce); false negatives cost a permanent 400 loop.
+
+    Covers:
+    - `tool_choice=required` / object-form `tool_choice` rejection
+      (Alibaba Bailian thinking-mode)
+    - `output_config.format` / `response_format` / `output_schema`
+      rejection (custom Anthropic proxies without response_format support)
     """
     msg = str(exc).lower()
-    if "tool_choice" not in msg:
-        return False
-    return any(kw in msg for kw in ("required", "object", "thinking"))
+    if "tool_choice" in msg and any(kw in msg for kw in ("required", "object", "thinking")):
+        return True
+    for field in ("output_config", "response_format", "output_schema"):
+        if field in msg and (
+            "extra inputs are not permitted" in msg
+            or "not permitted" in msg
+            or "unsupported" in msg
+            or "unknown" in msg
+        ):
+            return True
+    return False
 
 
 def _cleanup_root_frame(root_frame_id: str) -> None:

@@ -1415,7 +1415,7 @@ class ImageContentCompatibilityMiddleware(AgentMiddleware):
             )
 
 
-# Agent routing cache and filters (Phase 3.5)
+# Agent routing cache and filters
 _AGENT_GRAPH_CACHE: dict[tuple[str, str], Any] = {}
 
 

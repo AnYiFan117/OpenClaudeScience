@@ -98,7 +98,7 @@ class AgentConfig:
         middlewares: Middleware names to activate
         max_iterations: Max iterations (None = unlimited)
         can_spawn_children: Whether this agent can spawn sub-agents
-        concurrent_with_parent: Whether to run concurrently with parent (v0.2)
+        concurrent_with_parent: Whether to run concurrently with parent
         output_schema: JSON schema for structured output
         description: Human-readable description
     """
@@ -162,8 +162,8 @@ AGENT_CONFIGS: dict[AgentName, AgentConfig] = {
         middlewares=("date",),
         max_iterations=10,
         can_spawn_children=False,
-        concurrent_with_parent=True,  # TODO: implement concurrent invocation in v0.2
-        description="Extract bookmarks/key-points from main frame — sequential for now, concurrent in v0.2",
+        concurrent_with_parent=True,
+        description="Extract bookmarks/key-points from main frame",
     ),
     "onboarding": AgentConfig(
         name="onboarding",

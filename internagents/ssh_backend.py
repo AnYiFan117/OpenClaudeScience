@@ -105,7 +105,6 @@ class SshShellBackend(SandboxBackendProtocol):
     def _python_json(self, source: str, payload: dict[str, Any], *, timeout: int | None = None) -> tuple[dict[str, Any] | None, str | None]:
         encoded = base64.b64encode(json.dumps(payload).encode()).decode()
         script = "python3 - <<'PY'\n" + source + "\nPY\n" + shlex.quote(encoded)
-        # The heredoc consumes the script; pass payload via env-safe argv by embedding into script instead.
         script = "PAYLOAD=" + shlex.quote(encoded) + " python3 - <<'PY'\n" + source + "\nPY"
         result = self._run_remote(script, timeout=timeout)
         if result.exit_code != 0:

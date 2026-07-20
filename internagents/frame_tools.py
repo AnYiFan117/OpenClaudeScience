@@ -73,10 +73,7 @@ def _tool_message(runtime: ToolRuntime, payload: dict[str, Any]) -> ToolMessage:
 
 
 def _command_with_frame(runtime: ToolRuntime, frame: FrameState) -> Command:
-    """Build a Command that writes frame_* fields to state and emits a tool message.
-
-    Fields written match `InternAgentState` frame_* fields (fixed by R1).
-    """
+    """Build a Command that writes frame_* fields to state and emits a tool message."""
     payload = frame_response(frame)
     update_dict: dict[str, Any] = {
         "frame_id": frame["id"],

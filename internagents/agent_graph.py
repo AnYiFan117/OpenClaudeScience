@@ -40,6 +40,12 @@ OPENAI_COMPATIBLE_PROVIDER_ALIASES = {
     "openrouter",
     "gateway",
 }
+ANTHROPIC_PROVIDER = "anthropic"
+ANTHROPIC_PROVIDER_ALIASES = {
+    ANTHROPIC_PROVIDER,
+    "claude",
+    "anthropic_native",
+}
 RETIRED_GATEWAY_HOST = "43.106.18.167"
 MISSING_MODEL_CREDENTIALS_RESPONSE = (
     "Model service is not configured. Please configure an OpenAI-compatible API key first."
@@ -93,7 +99,7 @@ from internagents.dynamic_local_backend import (
     DynamicLocalShellBackendFactory,
 )
 from internagents.date_middleware import RuntimeDateContextMiddleware
-from internagents.frame_middleware import FrameContextMiddleware, FrameRootMiddleware, MessageInboxMiddleware
+from internagents.frame_middleware import FrameContextMiddleware, FrameRootMiddleware, MessageInboxMiddleware, StripAnthropicCacheControlMiddleware
 from internagents.frame_state import ACTIVE_FRAME_STATUSES, normalize_frame_state, update_frame_status
 from internagents.frame_tools import frame_tools
 from internagents.interaction_tools import interaction_tools
@@ -177,6 +183,8 @@ def _config_model_provider(config: dict[str, Any] | None = None) -> str | None:
 def _normalize_model_provider(provider: str | None) -> str | None:
     if provider in OPENAI_COMPATIBLE_PROVIDER_ALIASES:
         return OPENAI_COMPATIBLE_PROVIDER
+    if provider in ANTHROPIC_PROVIDER_ALIASES:
+        return ANTHROPIC_PROVIDER
     return None
 
 
@@ -201,7 +209,7 @@ def _effective_model_provider(config: dict[str, Any] | None = None) -> str | Non
 
 
 def _strip_model_provider_prefix(model: str) -> str:
-    for prefix in ("openrouter:", "openai:"):
+    for prefix in ("openrouter:", "openai:", "anthropic:"):
         if model.startswith(prefix):
             return model[len(prefix) :]
     return model
@@ -217,6 +225,11 @@ def _openai_compatible_model_spec(model: str) -> str:
     return f"openai:{stripped}"
 
 
+def _anthropic_model_spec(model: str) -> str:
+    stripped = _strip_model_provider_prefix(model)
+    return f"anthropic:{stripped}"
+
+
 def _config_model(config: dict[str, Any] | None = None) -> str | None:
     if config is None:
         config = _read_config_for_model()
@@ -230,6 +243,11 @@ def _config_model(config: dict[str, Any] | None = None) -> str | None:
             or config.get("openrouter_model")
             or config.get("manual_model")
             or config.get("gateway_model")
+        )
+    elif provider == ANTHROPIC_PROVIDER:
+        model = (
+            config.get("anthropic_model")
+            or config.get("manual_model")
         )
     elif config.get("model_selection_mode") == "manual":
         model = config.get("manual_model")
@@ -248,6 +266,22 @@ def _config_openai_compatible_base_url(
         "openai_base_url",
         "openrouter_base_url",
         "openrouter_api_base",
+    ):
+        value = config.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _config_anthropic_base_url(
+    config: dict[str, Any] | None = None,
+) -> str | None:
+    """Return the Anthropic base URL for anthropic provider (custom proxies)."""
+    if config is None:
+        config = _read_config_for_model()
+    for key in (
+        "anthropic_base_url",
+        "anthropic_api_base",
     ):
         value = config.get(key)
         if isinstance(value, str) and value.strip():
@@ -329,6 +363,34 @@ def _lock_openai_compatible_environment() -> None:
         os.environ["OPENAI_API_KEY"] = api_key
 
 
+def _lock_anthropic_environment() -> None:
+    """Push anthropic config → env so langchain_anthropic finds base_url + api_key."""
+    config = _read_config_for_model()
+    if _effective_model_provider(config) != ANTHROPIC_PROVIDER:
+        return
+
+    base_url = _config_anthropic_base_url(config) or _env_value("ANTHROPIC_BASE_URL")
+    if base_url:
+        os.environ["ANTHROPIC_BASE_URL"] = base_url
+
+    # Prefer explicit anthropic key; fall back to config-declared key; last
+    # resort — a custom base_url usually means a proxy that shares creds
+    # with the OpenAI-compatible surface, so borrow OPENAI_API_KEY /
+    # OPENROUTER_API_KEY when it's the only thing on hand. If no key at
+    # all is set, langchain_anthropic will still reject the request; but
+    # for local dev + non-authenticating proxies (common case) this
+    # unblocks the E2E path.
+    api_key = _env_value("ANTHROPIC_API_KEY")
+    if not api_key:
+        config_key = config.get("anthropic_api_key")
+        if isinstance(config_key, str) and config_key.strip():
+            api_key = config_key.strip()
+    if not api_key and base_url:
+        api_key = _env_value("OPENAI_API_KEY") or _env_value("OPENROUTER_API_KEY")
+    if api_key:
+        os.environ["ANTHROPIC_API_KEY"] = api_key
+
+
 def _resolve_model() -> str:
     config = _read_config_for_model()
     provider = _effective_model_provider(config)
@@ -340,6 +402,13 @@ def _resolve_model() -> str:
             return _openai_compatible_model_spec(explicit_openai_model)
         if config_model:
             return _openai_compatible_model_spec(config_model)
+
+    if provider == ANTHROPIC_PROVIDER:
+        explicit_anthropic_model = _env_value("ANTHROPIC_MODEL")
+        if explicit_anthropic_model:
+            return _anthropic_model_spec(explicit_anthropic_model)
+        if config_model:
+            return _anthropic_model_spec(config_model)
 
     explicit_model = _env_value("DEEPAGENT_MODEL")
     if explicit_model:
@@ -353,6 +422,8 @@ def _resolve_model() -> str:
     normalized_provider = _normalize_model_provider(provider)
     if normalized_provider == OPENAI_COMPATIBLE_PROVIDER and model:
         return _openai_compatible_model_spec(model)
+    if normalized_provider == ANTHROPIC_PROVIDER and model:
+        return _anthropic_model_spec(model)
 
     return "openrouter:deepseek-v4-flash"
 
@@ -363,10 +434,13 @@ def _model_credentials_missing(model_spec: str) -> bool:
         return not bool(_env_value("OPENAI_API_KEY"))
     if separator and provider == "openrouter":
         return not bool(_env_value("OPENROUTER_API_KEY"))
+    if separator and provider == "anthropic":
+        return not bool(_env_value("ANTHROPIC_API_KEY"))
     return False
 
 
 _lock_openai_compatible_environment()
+_lock_anthropic_environment()
 MODEL = _resolve_model()
 REASONING_OUTPUT_MODEL_ALIASES = {
     "deepseek-v4-flash",
@@ -380,9 +454,17 @@ REASONING_OUTPUT_MODEL_ALIASES = {
 # fallback → 32k. See internagents/context_window.py.
 from internagents.context_window import detect_context_window  # noqa: E402
 
+_ctx_provider = _effective_model_provider()
+if _ctx_provider == ANTHROPIC_PROVIDER:
+    _ctx_base_url = _config_anthropic_base_url() or os.environ.get("ANTHROPIC_BASE_URL")
+    _ctx_api_key = os.environ.get("ANTHROPIC_API_KEY")
+else:
+    _ctx_base_url = _config_openai_compatible_base_url() or os.environ.get("OPENAI_BASE_URL")
+    _ctx_api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
+
 MODEL_CONTEXT_WINDOW = detect_context_window(
-    base_url=_config_openai_compatible_base_url() or os.environ.get("OPENAI_BASE_URL"),
-    api_key=os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY"),
+    base_url=_ctx_base_url,
+    api_key=_ctx_api_key,
     model_name=_config_model() or MODEL,
 )
 FRAME_CONTINUATION_TURNS_KEY = "frameContinuationTurns"
@@ -1544,6 +1626,9 @@ def _filter_middlewares_for_agent(
         middleware.append(FrameRootMiddleware())
         # Drain send_frame_message inbox at every parent turn boundary.
         middleware.append(MessageInboxMiddleware())
+    # Strip Anthropic `cache_control` markers when talking to a custom proxy
+    # that rejects them (auto-enabled when ANTHROPIC_BASE_URL is set).
+    middleware.append(StripAnthropicCacheControlMiddleware())
 
     for name in (agent_cfg.middlewares or []):
         if name == "date":
@@ -1839,6 +1924,7 @@ def create_agent_for_resource(resource: ResourceConfig):  # noqa: ANN201
     middleware.append(RuntimeDateContextMiddleware())
     middleware.append(FrameContextMiddleware())
     middleware.append(_thread_skill_middleware(agent_config, backend))
+    middleware.append(StripAnthropicCacheControlMiddleware())
     from internagents.workspace_context_middleware import (
         WorkspaceContextMiddleware,
     )

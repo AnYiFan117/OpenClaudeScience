@@ -357,3 +357,78 @@ class MessageInboxMiddleware(AgentMiddleware):
         )
         return {"messages": existing + new_msgs}
 
+
+class StripAnthropicCacheControlMiddleware(AgentMiddleware):
+    """Disable Anthropic prompt-caching for custom proxies that reject it.
+
+    Deepagents' `AnthropicPromptCachingMiddleware` + `MemoryMiddleware`
+    add `cache_control` markers (on system content blocks, tools, and the
+    top-level `model_settings["cache_control"]` kwarg) so Anthropic prompt-
+    caching kicks in. Custom Anthropic-compatible proxies frequently reject
+    the field with `cache_control: Extra inputs are not permitted`.
+
+    Rather than trying to strip the marker AFTER upstream middleware adds
+    it (fragile — cache_control leaks into multiple request slots including
+    `model_settings`), we import-time monkey-patch
+    `AnthropicPromptCachingMiddleware._should_apply_caching` to always
+    return False when caching is disabled. This makes the caching middleware
+    a no-op and no cache_control fields are ever created.
+
+    Activated when `INTERNAGENTS_STRIP_ANTHROPIC_CACHE_CONTROL` is truthy
+    OR when `ANTHROPIC_BASE_URL` is set (proxy). Set env var to `0` to
+    disable when using the real Anthropic API which accepts the field.
+
+    This middleware itself is a no-op — the effect comes from the
+    monkey-patch applied at module import.
+    """
+
+    @property
+    def name(self) -> str:
+        return "StripAnthropicCacheControlMiddleware"
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        return await handler(request)
+
+
+def _disable_anthropic_caching_if_proxy() -> None:
+    """Monkey-patch AnthropicPromptCachingMiddleware + MemoryMiddleware.
+
+    Runs once at import. When a custom ANTHROPIC_BASE_URL is set, force the
+    caching middleware to skip all requests. Also patches MemoryMiddleware
+    to not add cache_control markers.
+    """
+    override = os.environ.get("INTERNAGENTS_STRIP_ANTHROPIC_CACHE_CONTROL")
+    if override is not None:
+        active = override.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        active = bool(os.environ.get("ANTHROPIC_BASE_URL"))
+    if not active:
+        return
+    try:
+        from langchain_anthropic.middleware.prompt_caching import (
+            AnthropicPromptCachingMiddleware,
+        )
+        AnthropicPromptCachingMiddleware._should_apply_caching = (  # type: ignore[method-assign]
+            lambda self, request: False
+        )
+    except Exception:
+        pass
+    try:
+        from deepagents.middleware.memory import MemoryMiddleware
+        _orig_init = MemoryMiddleware.__init__
+
+        def _init_no_cache(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            kwargs["add_cache_control"] = False
+            _orig_init(self, *args, **kwargs)
+
+        MemoryMiddleware.__init__ = _init_no_cache  # type: ignore[method-assign]
+    except Exception:
+        pass
+
+
+_disable_anthropic_caching_if_proxy()
+

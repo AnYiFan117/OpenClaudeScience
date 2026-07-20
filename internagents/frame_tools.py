@@ -3,11 +3,16 @@
 A Frame represents the active execution unit for a thread. Tools:
 - get_frame: read current frame state (objective, status, budget, elapsed)
 - update_frame: mark the current frame `completed` or `blocked`
-- spawn_subframe: delegate an independent sub-task to a child frame
+- delegate_subframes: batch delegate independent sub-tasks with optional fire-and-forget
+- collect_subframes: collect results for wait=False children
+- stop_subframes: cancel running children
+- list_child_frames: inspect currently running child frames
+- send_frame_message: send message to parent or child frames
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Literal
 
@@ -128,60 +133,267 @@ def update_frame(
     return _command_with_frame(runtime, updated)
 
 
-@tool("spawn_subframe")
-async def spawn_subframe(
-    agent_name: Literal["main"],
-    objective: str,
-    runtime: ToolRuntime,
+@tool("delegate_subframes")
+async def delegate_subframes(
+    requests: list[dict[str, Any]],
+    wait: bool = True,
+    timeout: float | None = None,
+    runtime: ToolRuntime = None,
 ) -> dict[str, Any]:
-    """Delegate an independent sub-task to a child work-frame and wait for its result.
+    """Batch delegate up to 48 independent sub-tasks with optional fire-and-forget.
 
-    The child inherits the current root_frame_id but runs in its own thread with
-    a fresh objective. This blocks until the child reaches a terminal status
-    (completed/failed/cancelled/blocked); its output_data is returned so the
-    caller can use the result.
+    wait=True (default): spawn all concurrently, block until all finish, return terminal results.
+    wait=False: dispatch all without blocking, return running descriptors with frame_ids.
+    timeout: if wait=True and set, gather with a deadline; unfinished slots return running descriptors.
 
-    Use when: the work is genuinely separable from your main line of reasoning
-    (an independent literature search, a self-contained computation) and would
-    otherwise clutter your working context. Do NOT use for tool wrappers or
-    single-shot lookups — the frame overhead only pays off for multi-step work.
+    Each request in the list must have "objective" or "task" field (and optionally "name", "agent_name").
+    Agent defaults to "main".
     """
     current = _current_frame(runtime)
     if current is None:
-        return {"error": "cannot spawn subframe because this thread has no parent frame", "frame": None}
+        return {"error": "cannot delegate subframes: this thread has no frame", "frames": None}
 
-    if agent_name != "main":
-        return {
-            "error": f"agent_name={agent_name!r} not allowed; only 'main' is spawnable via this tool",
-            "frame": None,
-        }
+    # Validate: max 48 requests
+    if len(requests) > 48:
+        return {"error": f"max 48 requests per batch, got {len(requests)}", "frames": None}
 
-    from internagents.frame_service import spawn_child_frame
-
-    try:
-        child = await spawn_child_frame(
-            current,
-            agent_name=agent_name,
-            input_data={"objective": objective},
-        )
-    except Exception as exc:  # noqa: BLE001
-        from internagents.frame_middleware import _dbg
-        _dbg(f"Tool · SPAWN failed: {exc}")
-        return {"error": f"spawn_subframe failed: {exc}", "frame": None}
-
-    from internagents.frame_middleware import _dbg
-    _dbg(
-        f"Tool · SPAWN parent={current['id'][:8]} child={child['id'][:8]} "
-        f"agent={agent_name} status={child.get('status')}"
+    from internagents.frame_service import (
+        dispatch_child_frame_nowait,
+        collect_child_frames,
     )
 
-    return {
-        "child_frame_id": child["id"],
-        "root_frame_id": child.get("root_frame_id"),
-        "status": child.get("status"),
-        "output_data": child.get("output_data") or {},
-    }
+    results: list[dict[str, Any]] = []
+
+    # wait=False: fire-and-forget dispatch
+    if not wait:
+        dispatched_ids = []
+        for req in requests:
+            objective = req.get("objective") or req.get("task") or ""
+            agent_name = req.get("agent_name", "main")
+            name = req.get("name")
+
+            if not objective:
+                results.append({"error": "objective/task required", "frame": None})
+                continue
+
+            if agent_name not in {"main", "reviewer"}:
+                results.append({"error": f"agent_name={agent_name!r} not supported", "frame": None})
+                continue
+
+            try:
+                desc = await dispatch_child_frame_nowait(
+                    current,
+                    agent_name=agent_name,
+                    input_data={"objective": objective},
+                    name=name,
+                )
+                results.append(desc)
+                dispatched_ids.append(desc["frame_id"])
+            except Exception as exc:  # noqa: BLE001
+                from internagents.frame_middleware import _dbg
+                _dbg(f"Tool · DELEGATE dispatch failed: {exc}")
+                results.append({"error": f"dispatch failed: {exc}", "frame": None})
+
+        from internagents.frame_middleware import _dbg
+        _dbg(f"Tool · DELEGATE dispatched {len(dispatched_ids)} frames (wait=False)")
+        return {"dispatched": True, "frames": results, "frame_ids": dispatched_ids}
+
+    # wait=True: dispatch all, then collect with optional timeout
+    dispatched_ids = []
+    for req in requests:
+        objective = req.get("objective") or req.get("task") or ""
+        agent_name = req.get("agent_name", "main")
+        name = req.get("name")
+
+        if not objective:
+            results.append({"error": "objective/task required", "frame": None})
+            continue
+
+        if agent_name not in {"main", "reviewer"}:
+            results.append({"error": f"agent_name={agent_name!r} not supported", "frame": None})
+            continue
+
+        try:
+            desc = await dispatch_child_frame_nowait(
+                current,
+                agent_name=agent_name,
+                input_data={"objective": objective},
+                name=name,
+            )
+            dispatched_ids.append(desc["frame_id"])
+        except Exception as exc:  # noqa: BLE001
+            from internagents.frame_middleware import _dbg
+            _dbg(f"Tool · DELEGATE dispatch failed: {exc}")
+            results.append({"error": f"dispatch failed: {exc}", "frame": None})
+
+    # Collect all dispatched children with optional timeout
+    if dispatched_ids:
+        try:
+            collected = await collect_child_frames(dispatched_ids, timeout=timeout or 30.0)
+            for collected_result in collected:
+                if collected_result.get("frame_id") in dispatched_ids:
+                    results.append({
+                        "child_frame_id": collected_result["frame_id"],
+                        "root_frame_id": collected_result.get("root_frame_id"),
+                        "status": collected_result.get("status"),
+                        "output_data": collected_result.get("output_data") or {},
+                    })
+        except Exception as exc:  # noqa: BLE001
+            from internagents.frame_middleware import _dbg
+            _dbg(f"Tool · DELEGATE collect failed: {exc}")
+            # Mark all as errored
+            for fid in dispatched_ids:
+                results.append({"error": f"collect failed: {exc}", "frame": None})
+
+    from internagents.frame_middleware import _dbg
+    _dbg(f"Tool · DELEGATE gathered {len([r for r in results if 'child_frame_id' in r])} frames (wait=True)")
+    return {"wait": True, "frames": results}
+
+
+@tool("collect_subframes")
+async def collect_subframes(
+    frame_ids: list[str],
+    timeout: float = 30.0,
+    runtime: ToolRuntime = None,
+) -> dict[str, Any]:
+    """Collect results for previously dispatched wait=False children.
+
+    Bounded blocking wait (default 30s); unfinished slots return {frame_id, status:"running"}.
+    """
+    if not frame_ids:
+        return {"error": "frame_ids list cannot be empty", "frames": None}
+
+    from internagents.frame_service import collect_child_frames
+
+    try:
+        results = await collect_child_frames(frame_ids, timeout=timeout)
+    except ValueError as exc:
+        return {"error": str(exc), "frames": None}
+    except Exception as exc:  # noqa: BLE001
+        from internagents.frame_middleware import _dbg
+        _dbg(f"Tool · COLLECT failed: {exc}")
+        return {"error": f"collect_subframes failed: {exc}", "frames": None}
+
+    from internagents.frame_middleware import _dbg
+    terminal_count = sum(1 for r in results if r.get("status") in {"completed", "failed", "cancelled"})
+    _dbg(f"Tool · COLLECT {terminal_count}/{len(results)} frames terminal (timeout={timeout}s)")
+
+    return {"frames": results, "timeout": timeout}
+
+
+@tool("stop_subframes")
+async def stop_subframes(
+    frame_ids: list[str],
+    reason: str | None = None,
+    runtime: ToolRuntime = None,
+) -> dict[str, Any]:
+    """Stop running child frames; returns their persisted state."""
+    if not frame_ids:
+        return {"error": "frame_ids list cannot be empty", "frames": None}
+
+    from internagents.frame_service import stop_child_frame
+
+    results = []
+    for fid in frame_ids:
+        try:
+            state = await stop_child_frame(fid, reason=reason)
+            results.append(state)
+        except Exception as exc:  # noqa: BLE001
+            from internagents.frame_middleware import _dbg
+            _dbg(f"Tool · STOP failed for {fid}: {exc}")
+            results.append({"frame_id": fid, "error": str(exc)})
+
+    from internagents.frame_middleware import _dbg
+    _dbg(f"Tool · STOP cancelled {len(frame_ids)} frames" + (f" (reason: {reason})" if reason else ""))
+
+    return {"frames": results, "reason": reason}
+
+
+@tool("list_child_frames")
+async def list_child_frames(
+    only_running: bool = True,
+    runtime: ToolRuntime = None,
+) -> dict[str, Any]:
+    """List child frames dispatched from the current parent frame.
+
+    Returns {running_children: [{frame_id, agent_name, status, started_at?}], count}
+    only_running=True (default): only frames still executing (status="running").
+    only_running=False: also include terminal children whose results have not been collected.
+    """
+    current = _current_frame(runtime)
+    if current is None:
+        return {"error": "no current frame", "running_children": [], "count": 0}
+    from internagents.frame_service import list_child_frames_by_parent
+    children = list_child_frames_by_parent(current["id"], only_running=only_running)
+    return {"running_children": children, "count": len(children)}
+
+
+@tool("send_frame_message")
+async def send_frame_message(
+    target: str,
+    message: str,
+    kind: Literal["info", "question"] = "info",
+    runtime: ToolRuntime = None,
+) -> dict[str, Any]:
+    """Message a direct parent or direct child frame.
+
+    target: either a child frame_id, or literal "parent".
+    Topology: only direct parent + direct children. Siblings/grandparents refused.
+    Returns {status: "sent"|"injected"|"refused", detail: ...}
+    """
+    current = _current_frame(runtime)
+    if current is None:
+        return {"status": "refused", "error": "no current frame"}
+    from internagents.frame_service import send_message_to_frame
+    return await send_message_to_frame(current, target, message, kind)
+
+
+@tool("wait_for_notification")
+async def wait_for_notification(
+    timeout_seconds: int = 60,
+    runtime: ToolRuntime = None,
+) -> dict[str, Any]:
+    """CS host wait_for_notification analog: park until a child frame lands,
+    completes, or sends a message. Blocks up to `timeout_seconds` (max 1800).
+
+    Returns:
+      {status: "received", notifications: [{notification_type, sender_frame_id, payload, created_at}, ...]}
+        — one or more events; drain all of them before calling again.
+      {status: "timeout", notifications: [], pending_work: {children: N, ...}}
+        — deadline hit and children still running.
+      {status: "error"} — nothing to wait for (empty queue AND no running children).
+
+    Notification types:
+      - "child_landed"  : a wait=False child was just dispatched (payload={frame_id, name, agent_name})
+      - "completion"    : a child reached terminal state (payload=terminal descriptor)
+      - "message"       : another frame sent us a send_frame_message (payload={message, kind})
+
+    Use in the CS canonical idle pattern: dispatch children with wait=False,
+    then loop `wait_for_notification` with a modest timeout, acting on each
+    landed event and repeating until status=error means the fan-out is done.
+    """
+    current = _current_frame(runtime)
+    if current is None:
+        return {"status": "error", "reason": "no current frame"}
+    from internagents.frame_service import wait_for_frame_notifications
+    if timeout_seconds is None:
+        timeout_seconds = 60
+    if timeout_seconds > 1800:
+        timeout_seconds = 1800
+    if timeout_seconds < 0:
+        timeout_seconds = 0
+    return await wait_for_frame_notifications(current["id"], timeout_seconds=timeout_seconds)
 
 
 def frame_tools() -> list[Any]:
-    return [get_frame, update_frame, spawn_subframe]
+    return [
+        get_frame,
+        update_frame,
+        delegate_subframes,
+        collect_subframes,
+        stop_subframes,
+        list_child_frames,
+        send_frame_message,
+        wait_for_notification,
+    ]
+

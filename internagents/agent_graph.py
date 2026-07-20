@@ -93,7 +93,7 @@ from internagents.dynamic_local_backend import (
     DynamicLocalShellBackendFactory,
 )
 from internagents.date_middleware import RuntimeDateContextMiddleware
-from internagents.frame_middleware import FrameContextMiddleware, FrameRootMiddleware
+from internagents.frame_middleware import FrameContextMiddleware, FrameRootMiddleware, MessageInboxMiddleware
 from internagents.frame_state import ACTIVE_FRAME_STATUSES, normalize_frame_state, update_frame_status
 from internagents.frame_tools import frame_tools
 from internagents.interaction_tools import interaction_tools
@@ -374,6 +374,17 @@ REASONING_OUTPUT_MODEL_ALIASES = {
     "deepseek-v4-pro",
     "deepseek/deepseek-v4-pro",
 }
+
+# Resolve the effective context window once at module init so state/UI can
+# render "context remaining". Order: env override → GET /v1/models → static
+# fallback → 32k. See internagents/context_window.py.
+from internagents.context_window import detect_context_window  # noqa: E402
+
+MODEL_CONTEXT_WINDOW = detect_context_window(
+    base_url=_config_openai_compatible_base_url() or os.environ.get("OPENAI_BASE_URL"),
+    api_key=os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY"),
+    model_name=_config_model() or MODEL,
+)
 FRAME_CONTINUATION_TURNS_KEY = "frameContinuationTurns"
 FRAME_MAX_AUTO_TURNS_ENV = "INTERNAGENT_FRAME_MAX_AUTO_TURNS"
 REMOTE_RUNTIME_PENDING_INTERRUPT_KEY = "remoteRuntimePendingInterrupt"
@@ -463,6 +474,12 @@ class InternAgentState(TypedDict):
     agent_name: NotRequired[str]
     frame_status: NotRequired[str]
     tokens_used: NotRequired[int]
+    # Context-window telemetry for the UI progress bar.
+    # `contextWindow` is the total input tokens the model accepts;
+    # `contextTokensUsed` is the input token count of the most recent
+    # model call. Both are updated by FrameContextMiddleware after each turn.
+    contextWindow: NotRequired[int]
+    contextTokensUsed: NotRequired[int]
     time_used_seconds: NotRequired[int]
     input_data: NotRequired[dict[str, Any]]
     output_data: NotRequired[dict[str, Any]]
@@ -1418,6 +1435,17 @@ class ImageContentCompatibilityMiddleware(AgentMiddleware):
 # Agent routing cache and filters
 _AGENT_GRAPH_CACHE: dict[tuple[str, str], Any] = {}
 
+# Separate cache for reviewer variants — key: (resource_id, strict: bool).
+# When strict=False, the reviewer is built without response_format so the
+# LLM outputs prose/JSON directly. Used by the try/catch fallback in
+# verifier_dispatch_middleware when a provider rejects tool_choice=required.
+_REVIEWER_VARIANT_CACHE: dict[tuple[str, bool], Any] = {}
+
+# Sentinel for `_build_agent_graph_for(response_format_override=...)`.
+# `None` is a legitimate override value ("disable structured output"), so we
+# need a separate marker to mean "not overridden — use output_schema".
+_UNSET: Any = object()
+
 
 def _response_format_for_agent(
     agent_cfg: "internagents.agent_registry.AgentConfig",
@@ -1504,6 +1532,8 @@ def _filter_middlewares_for_agent(
     # and their initial state.messages is empty (no HumanMessage to extract).
     if agent_cfg.name in ("main", "onboarding"):
         middleware.append(FrameRootMiddleware())
+        # Drain send_frame_message inbox at every parent turn boundary.
+        middleware.append(MessageInboxMiddleware())
 
     for name in (agent_cfg.middlewares or []):
         if name == "date":
@@ -1526,6 +1556,18 @@ def _filter_middlewares_for_agent(
     if agent_cfg.name == "main" and resource is not None:
         from internagents.user_memory_middleware import UserMemoryMiddleware
         middleware.append(UserMemoryMiddleware(resource=resource))
+
+    # Workspace-path injection — main agent only. Resource config stores
+    # workspace as "." (deferred to runtime); the actual absolute path
+    # arrives per-run via metadata.internagents_workspace_path. This
+    # middleware reads that at each model call and appends a "Current
+    # workspace" block so the LLM stops resolving bare paths against
+    # process CWD.
+    if agent_cfg.name == "main" and resource is not None:
+        from internagents.workspace_context_middleware import (
+            WorkspaceContextMiddleware,
+        )
+        middleware.append(WorkspaceContextMiddleware(resource=resource))
 
     # Always add compatibility and budget middlewares for all agents
     middleware.append(ImageContentCompatibilityMiddleware())
@@ -1559,6 +1601,8 @@ def _resolve_resource(resource_id: str) -> ResourceConfig:
 def _build_agent_graph_for(
     resource_id: str,
     agent_name: str,
+    *,
+    response_format_override: Any = _UNSET,
 ) -> Any:
     """Build a new deep_agent graph for the given resource and agent name.
 
@@ -1571,6 +1615,11 @@ def _build_agent_graph_for(
     Args:
         resource_id: Resource identifier (usually "local" or "remote1"-"remote8")
         agent_name: Agent name ("main", "reviewer", "bookmarker", "onboarding")
+        response_format_override: If provided, replaces the schema-derived
+            response_format. Use to build a "no structured output" variant
+            of an agent whose config declares an output_schema (e.g. reviewer
+            prose fallback). Pass `None` to explicitly disable structured
+            output for this build.
 
     Returns:
         Compiled LangGraph agent
@@ -1610,6 +1659,12 @@ def _build_agent_graph_for(
         else {}
     )
 
+    resolved_response_format = (
+        _response_format_for_agent(agent_cfg)
+        if response_format_override is _UNSET
+        else response_format_override
+    )
+
     # Build and return the agent graph
     return create_deep_agent(
         model=_create_agent_model(),
@@ -1620,7 +1675,7 @@ def _build_agent_graph_for(
         system_prompt=_agent_system_prompt(agent_prompt, agent_config),
         interrupt_on=interrupt_on,
         middleware=middleware,
-        response_format=_response_format_for_agent(agent_cfg),
+        response_format=resolved_response_format,
     )
 
 
@@ -1656,6 +1711,29 @@ def get_agent_graph(resource_id: str = "local", agent_name: str = "main") -> Any
     if key not in _AGENT_GRAPH_CACHE:
         _AGENT_GRAPH_CACHE[key] = _build_agent_graph_for(resource_id, agent_name)
     return _AGENT_GRAPH_CACHE[key]
+
+
+def get_reviewer_graph(resource_id: str = "local", *, strict: bool = True) -> Any:
+    """Return a reviewer graph variant, building on first request.
+
+    `strict=True` builds reviewer with `response_format=<verdict schema>`,
+    which deepagents converts to `tool_choice=required` for structured
+    output. `strict=False` builds without response_format so the LLM
+    outputs prose (or free-form JSON in message content), and callers
+    rely on `_try_parse_reviewer_json` in verifier_dispatch_middleware
+    to extract the payload.
+
+    Used by verifier_dispatch_middleware's try/except path: strict is
+    tried first, and on a 400 that clearly points at tool_choice, the
+    caller flips to strict=False permanently for this process.
+    """
+    key = (resource_id, strict)
+    if key not in _REVIEWER_VARIANT_CACHE:
+        override = _UNSET if strict else None
+        _REVIEWER_VARIANT_CACHE[key] = _build_agent_graph_for(
+            resource_id, "reviewer", response_format_override=override,
+        )
+    return _REVIEWER_VARIANT_CACHE[key]
 
 
 def create_agent_for_resource(resource: ResourceConfig):  # noqa: ANN201
@@ -1747,9 +1825,14 @@ def create_agent_for_resource(resource: ResourceConfig):  # noqa: ANN201
     middleware.append(ImageContentCompatibilityMiddleware())
     middleware.append(WebSearchBudgetMiddleware())
     middleware.append(FrameRootMiddleware())
+    middleware.append(MessageInboxMiddleware())
     middleware.append(RuntimeDateContextMiddleware())
     middleware.append(FrameContextMiddleware())
     middleware.append(_thread_skill_middleware(agent_config, backend))
+    from internagents.workspace_context_middleware import (
+        WorkspaceContextMiddleware,
+    )
+    middleware.append(WorkspaceContextMiddleware(resource=resource))
     return create_deep_agent(
         model=_create_agent_model(),
         tools=_resolve_tools(agent_config),
@@ -1915,6 +1998,20 @@ if (_env_value("INTERNAGENT_PROCESS_ROLE") or "").lower() == "runtime":
     agent_remote6 = agent
     agent_remote7 = agent
     agent_remote8 = agent
+
+    # Pre-warm reviewer variants at runtime startup (sync context). Verifier
+    # dispatches reviewer from inside async request handlers, and building
+    # a reviewer graph on the fly there calls `os.mkdir` which LangGraph's
+    # blockbuster rejects. Doing it here in module init runs the mkdir at
+    # import time, when blockbuster is not yet installed.
+    for _strict in (True, False):
+        try:
+            get_reviewer_graph("local", strict=_strict)
+        except Exception as _e:  # noqa: BLE001
+            print(
+                f"[verifier] pre-warm reviewer(strict={_strict}) failed: {_e}",
+                flush=True,
+            )
 else:
     # Coordinator mode: build cached graphs per resource
     _default_resource_id, _resource_agents = _build_resource_agents()
@@ -1970,5 +2067,17 @@ else:
             except Exception as _e:  # noqa: BLE001
                 print(
                     f"[verifier] pre-warm {_aname} graph failed: {_e}",
+                    flush=True,
+                )
+        # Reviewer has two variants (strict / prose) driven by
+        # verifier_dispatch_middleware's provider-probe fallback. Build both
+        # at startup for the same reason as above — lazy build inside async
+        # runs hits `os.mkdir` and gets rejected by blockbuster.
+        for _strict in (True, False):
+            try:
+                get_reviewer_graph("local", strict=_strict)
+            except Exception as _e:  # noqa: BLE001
+                print(
+                    f"[verifier] pre-warm reviewer(strict={_strict}) failed: {_e}",
                     flush=True,
                 )

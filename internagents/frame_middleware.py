@@ -39,6 +39,17 @@ def _dbg(msg: str) -> None:
         print(f"🖼️  [Frame] {msg}", flush=True)
 
 
+def _resolve_context_window() -> int | None:
+    """Lazy-load MODEL_CONTEXT_WINDOW to avoid circular import at module load."""
+    try:
+        from internagents.agent_graph import MODEL_CONTEXT_WINDOW
+    except Exception:
+        return None
+    if isinstance(MODEL_CONTEXT_WINDOW, int) and MODEL_CONTEXT_WINDOW > 0:
+        return MODEL_CONTEXT_WINDOW
+    return None
+
+
 class FrameAgentState(TypedDict):
     frame_id: NotRequired[str]
     root_frame_id: NotRequired[str]
@@ -49,6 +60,11 @@ class FrameAgentState(TypedDict):
     time_used_seconds: NotRequired[int]
     input_data: NotRequired[dict[str, Any]]
     output_data: NotRequired[dict[str, Any]]
+    # UI context-window telemetry. Middleware writes these on each
+    # after_model; frontend renders as a progress bar. Must be declared
+    # here so LangGraph forwards them through state updates.
+    contextWindow: NotRequired[int]
+    contextTokensUsed: NotRequired[int]
 
 
 
@@ -195,6 +211,7 @@ class FrameRootMiddleware(AgentMiddleware):
                 "tokens_used": 0,
                 "time_used_seconds": 0,
                 "input_data": frame["input_data"],
+                "contextWindow": _resolve_context_window(),
             }
 
         # Case 2: frame in terminal status → revive (keep frame_id + objective)
@@ -244,11 +261,19 @@ class FrameContextMiddleware(AgentMiddleware):
             return None
         current = state.get("tokens_used") or 0
         new_total = current + delta
+        input_tokens = usage.get("input_tokens", 0)
         _dbg(
-            f"Ctx  · TOKENS +{delta} (input={usage.get('input_tokens', 0)} "
+            f"Ctx  · TOKENS +{delta} (input={input_tokens} "
             f"output={usage.get('output_tokens', 0)}) → total {new_total}"
         )
-        return {"tokens_used": new_total}
+        update: dict[str, Any] = {"tokens_used": new_total}
+        if isinstance(input_tokens, int) and input_tokens > 0:
+            update["contextTokensUsed"] = input_tokens
+        if not state.get("contextWindow"):
+            cw = _resolve_context_window()
+            if cw is not None:
+                update["contextWindow"] = cw
+        return update
 
     async def aafter_model(self, state, runtime) -> dict[str, Any] | None:
         return self.after_model(state, runtime)
@@ -290,3 +315,45 @@ class FrameContextMiddleware(AgentMiddleware):
                 )
             )
         return await handler(request)
+
+
+class MessageInboxMiddleware(AgentMiddleware):
+    """Drain the current frame's message inbox at the start of every turn.
+
+    A frame's inbox is populated by `send_message_to_frame` when another
+    frame (direct parent or direct child) sends it a message. This
+    middleware drains that inbox in `before_agent` and prepends the
+    messages as HumanMessage entries with a `[From <sender>] ...` prefix
+    so the model sees them as first-class conversation input.
+
+    Runs after FrameRootMiddleware / FrameContextMiddleware so frame_id
+    is set in state.
+    """
+
+    @property
+    def name(self) -> str:
+        return "MessageInboxMiddleware"
+
+    def before_agent(self, state, runtime) -> dict | None:
+        frame = _frame_from_state(state)
+        if frame is None:
+            return None
+        from internagents.frame_service import drain_frame_inbox
+        pending = drain_frame_inbox(frame["id"])
+        if not pending:
+            return None
+        # Prepend one HumanMessage per pending inbox entry (order preserved
+        # by asyncio.Queue FIFO).
+        new_msgs: list = []
+        for entry in pending:
+            sender = entry.get("from_frame_id", "?")[:8]
+            kind = entry.get("kind", "info")
+            body = entry.get("message", "")
+            content = f"[From {sender} · {kind}] {body}"
+            new_msgs.append(HumanMessage(content=content))
+        existing = list(state.get("messages", []) or [])
+        _dbg(
+            f"Inbox · DRAIN frame_id={frame['id'][:8]} count={len(new_msgs)}"
+        )
+        return {"messages": existing + new_msgs}
+

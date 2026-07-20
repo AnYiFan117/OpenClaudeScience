@@ -113,7 +113,7 @@ def test_middleware_does_not_skip_child_frame():
     dropped: the middleware is wired only onto the `main` agent
     (agent_graph._filter_middlewares_for_agent), so it never runs on
     meta-children (reviewer/bookmarker/onboarding). When main is spawned
-    as a work child via spawn_subframe, we WANT its end-of-turn to be
+    as a work child via delegate_subframes, we WANT its end-of-turn to be
     reviewed.
     """
     config = {

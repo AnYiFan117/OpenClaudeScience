@@ -467,10 +467,8 @@ class VerifierDispatchMiddleware(AgentMiddleware):
     async def _run_reviewer(self, state: dict[str, Any]) -> dict[str, Any] | None:
         """Spawn reviewer with parent transcript as HumanMessage input.
 
-        The reviewer LangGraph agent needs `state.messages` to have real input;
-        passing metadata in `input_data` alone leaves the LLM with no prompt and
-        it terminates immediately. We construct an initial_state that includes
-        a HumanMessage rendering the parent's transcript.
+        Uses the new spawn_reviewer API which dispatches via the async delegate
+        infrastructure (dispatch_child_frame_nowait + collect_child_frames).
 
         Provider fallback: reviewer graph exists in two variants — strict
         (with response_format → tool_choice=required) and prose (no
@@ -479,7 +477,7 @@ class VerifierDispatchMiddleware(AgentMiddleware):
         tool_choice, `_REVIEWER_TOOL_CHOICE_OK` is flipped to False and all
         subsequent runs go straight to the prose variant.
         """
-        from internagents.agent_graph import get_reviewer_graph
+        from internagents.frame_service import spawn_reviewer
         from internagents.frame_state import create_child_frame
 
         global _REVIEWER_TOOL_CHOICE_OK
@@ -490,22 +488,13 @@ class VerifierDispatchMiddleware(AgentMiddleware):
             return None
 
         try:
-            # Build a minimal parent-frame stub so create_child_frame can hang
-            # the child off it (records parent_frame_id + shared root_frame_id).
+            # Build a minimal parent-frame stub for spawn_reviewer
             parent_stub = {
                 "id": frame["id"],
                 "root_frame_id": frame["root_frame_id"],
                 "agent_name": "main",
                 "status": "running",
             }
-            child = create_child_frame(
-                parent_stub,
-                "reviewer",
-                input_data={
-                    "review_target_frame_id": frame["id"],
-                    "harness_prompt": True,
-                },
-            )
 
             # Render parent transcript for the reviewer LLM
             parent_messages = state.get("messages", [])
@@ -513,7 +502,67 @@ class VerifierDispatchMiddleware(AgentMiddleware):
             objective = str(parent_input_data.get("objective") or "")
             review_prompt = _format_review_prompt(parent_messages, objective)
 
-            # Reviewer initial state — MUST include messages so LLM has input
+            # Wrap review_target in structured form for spawn_reviewer input_data
+            review_target = {
+                "review_target_frame_id": frame["id"],
+                "harness_prompt": True,
+                "review_text": review_prompt,
+            }
+
+            _dbg(f"CHECKPOINT → await reviewer (parent_msgs={len(parent_messages)})")
+
+            # Try strict variant first
+            try:
+                if _REVIEWER_TOOL_CHOICE_OK is not False:
+                    from internagents.agent_graph import get_reviewer_graph
+                    reviewer_graph = get_reviewer_graph("local", strict=True)
+
+                    # Create child manually and invoke directly (spawn_reviewer uses the new API,
+                    # but we still want to try strict first with fallback to prose)
+                    child = create_child_frame(
+                        parent_stub,  # type: ignore
+                        "reviewer",
+                        input_data={"review_target_frame_id": frame["id"], "harness_prompt": True},
+                    )
+                    initial_state = {
+                        "frame_id": child["id"],
+                        "root_frame_id": child["root_frame_id"],
+                        "parent_frame_id": child.get("parent_frame_id"),
+                        "agent_name": "reviewer",
+                        "frame_status": "running",
+                        "messages": [HumanMessage(content=review_prompt)],
+                        "input_data": child.get("input_data", {}),
+                    }
+                    invoke_config = {"configurable": {"thread_id": child["id"]}}
+                    result = await reviewer_graph.ainvoke(initial_state, config=invoke_config)
+                    if _REVIEWER_TOOL_CHOICE_OK is None:
+                        _REVIEWER_TOOL_CHOICE_OK = True
+                        _logger.info(
+                            "reviewer: strict structured output (tool_choice=required) "
+                            "confirmed working for this provider"
+                        )
+                    return result
+            except Exception as exc:
+                if _is_tool_choice_unsupported(exc) and _REVIEWER_TOOL_CHOICE_OK is None:
+                    _REVIEWER_TOOL_CHOICE_OK = False
+                    _logger.warning(
+                        "reviewer: provider rejected tool_choice=required "
+                        "(%s); switching to prose+parser fallback for this process.",
+                        type(exc).__name__,
+                    )
+                elif _REVIEWER_TOOL_CHOICE_OK is None:
+                    raise
+
+            # Prose fallback: call direct graph.ainvoke instead of strict
+            from internagents.agent_graph import get_reviewer_graph
+            from internagents.frame_state import create_child_frame
+
+            prose_graph = get_reviewer_graph("local", strict=False)
+            child = create_child_frame(
+                parent_stub,  # type: ignore
+                "reviewer",
+                input_data={"review_target_frame_id": frame["id"], "harness_prompt": True},
+            )
             initial_state = {
                 "frame_id": child["id"],
                 "root_frame_id": child["root_frame_id"],
@@ -523,36 +572,8 @@ class VerifierDispatchMiddleware(AgentMiddleware):
                 "messages": [HumanMessage(content=review_prompt)],
                 "input_data": child.get("input_data", {}),
             }
-
-            _dbg(f"CHECKPOINT → await reviewer (parent_msgs={len(parent_messages)})")
-
-            reviewer_graph = get_reviewer_graph(
-                "local", strict=(_REVIEWER_TOOL_CHOICE_OK is not False),
-            )
             invoke_config = {"configurable": {"thread_id": child["id"]}}
-            try:
-                result = await reviewer_graph.ainvoke(initial_state, config=invoke_config)
-                # First successful strict call → cache the good news
-                if _REVIEWER_TOOL_CHOICE_OK is None:
-                    _REVIEWER_TOOL_CHOICE_OK = True
-                    _logger.info(
-                        "reviewer: strict structured output (tool_choice=required) "
-                        "confirmed working for this provider"
-                    )
-            except Exception as exc:
-                if _is_tool_choice_unsupported(exc) and _REVIEWER_TOOL_CHOICE_OK is None:
-                    _REVIEWER_TOOL_CHOICE_OK = False
-                    _logger.warning(
-                        "reviewer: provider rejected tool_choice=required "
-                        "(%s); switching to prose+parser fallback for this process.",
-                        type(exc).__name__,
-                    )
-                    prose_graph = get_reviewer_graph("local", strict=False)
-                    result = await prose_graph.ainvoke(
-                        initial_state, config=invoke_config,
-                    )
-                else:
-                    raise
+            result = await prose_graph.ainvoke(initial_state, config=invoke_config)
 
             _dbg(
                 f"REVIEWER done frame_status="

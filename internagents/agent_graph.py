@@ -81,7 +81,7 @@ _IMAGE_INPUT_UNSUPPORTED_MODEL_KEYS: set[str] = set()
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
-from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
+from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT  # noqa: F401  # retained for downstream reference; no longer auto-injected
 from deepagents.profiles.provider import apply_provider_profile
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -689,18 +689,28 @@ def _thread_skill_middleware(
 
 
 def _thread_skill_subagents(config: dict[str, Any], backend: Any) -> list[dict[str, Any]]:
+    """Build the subagent list passed to deepagents' create_deep_agent.
+
+    We DO NOT auto-inject the built-in `general-purpose` subagent here —
+    deepagents' `SubAgentMiddleware` (the `task` tool) is a synchronous
+    reentrant dispatcher that shares the parent's LangGraph run. We use
+    our own async, independent-run dispatcher via frame_tools.delegate_subframes
+    / collect_subframes / wait_for_notification instead. Returning `[]` means
+    `SubAgentMiddleware` is not registered at all (see deepagents/graph.py:
+    `if inline_subagents`), so the `task` tool is absent from the toolset
+    and the model must reach for our async delegation path.
+
+    Skill-derived subagents (explicitly declared in config) are still
+    honored — they may be needed for skills that ship their own agent
+    profiles. If they're present, SubAgentMiddleware will register just
+    those, without the built-in general-purpose fallback.
+    """
     raw_subagents = config.get("subagents")
     subagents = (
         [dict(spec) for spec in raw_subagents if isinstance(spec, dict)]
         if isinstance(raw_subagents, list)
         else []
     )
-
-    has_general_purpose = any(
-        spec.get("name") == GENERAL_PURPOSE_SUBAGENT["name"] for spec in subagents
-    )
-    if not has_general_purpose:
-        subagents.insert(0, dict(GENERAL_PURPOSE_SUBAGENT))
 
     processed: list[dict[str, Any]] = []
     for spec in subagents:
